@@ -2,6 +2,8 @@
 
 A gentle, neurodivergent-friendly task tracking application that helps you maintain a log of your activities throughout the day.
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Support-yellow?style=for-the-badge&logo=buy-me-a-coffee)](https://buymeacoffee.com/chadwicksys13)
+
 ## 🌟 Overview
 
 SheepCat is designed to help people keep track of their work activities in a non-intrusive, supportive way. Perfect for neurodivergent individuals who benefit from gentle reminders and structured logging.
@@ -14,7 +16,7 @@ SheepCat is designed to help people keep track of their work activities in a non
 - Simple prompts to describe your activities
 
 ### AI-Powered Summaries
-- Uses Large Language Model (LLM) integration to automatically generate intelligent summaries
+- Uses an external Large Language Model (LLM) via Ollama for generating intelligent summaries
 - Creates summaries based on your task descriptions and any references you provide
 - Generates interval summaries for each time period
 - Produces a comprehensive daily summary at the end of each session
@@ -35,6 +37,24 @@ SheepCat is designed to help people keep track of their work activities in a non
 ## 🚀 Getting Started
 
 *(Installation and setup instructions will be added once the code is integrated)*
+
+## 🤖 LLM Configuration
+
+SheepCat uses an **external LLM setup** for generating intelligent summaries. The application is designed to work with **Ollama**, a local LLM runtime.
+
+### Requirements
+- Ollama installed and running on your system
+- Your chosen LLM model downloaded via Ollama
+
+### How It Works
+- The application makes API calls to your local Ollama instance
+- You can configure which model to use based on your preferences and hardware capabilities
+- All LLM processing happens through the Ollama API endpoint
+
+This external setup gives you:
+- **Privacy**: Your data stays on your machine
+- **Flexibility**: Choose any Ollama-compatible model
+- **Control**: Run the LLM on your own hardware
 
 ## 💡 How It Works
 
