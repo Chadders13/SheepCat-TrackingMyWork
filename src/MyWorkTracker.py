@@ -27,7 +27,7 @@ class WorkLoggerApp:
         self.is_running = False
         self.hourly_tasks = []  # Track tasks for the current hour
         self.hour_start_time = None
-        self.session_start_time = None  # Track when the day started
+        self.session_start_time = None  # Track when the session started
         self.timer_id = None
         self.countdown_id = None
         self.next_checkin_time = None
@@ -223,9 +223,9 @@ class WorkLoggerApp:
         # Split by sentences (simple approach)
         sentences = text.replace('\n', ' ').split('. ')
         
-        for sentence in sentences:
-            # Add period back if it was removed
-            if not sentence.endswith('.'):
+        for i, sentence in enumerate(sentences):
+            # Add period back if it was removed (but not for the last sentence which may already have one)
+            if i < len(sentences) - 1 and not sentence.endswith('.'):
                 sentence = sentence + '.'
             
             # If adding this sentence would exceed limit
