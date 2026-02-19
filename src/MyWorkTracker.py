@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import simpledialog, messagebox
+from tkinter import simpledialog, messagebox, scrolledtext
 import csv
 import datetime
 import os
@@ -13,6 +13,8 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 # Swap this to "nordic-text" or "deepseek-coder" etc. as per your ollama list
 OLLAMA_MODEL = "deepseek-r1:8b"
 LOG_FILE = "work_log.csv"
+LLM_REQUEST_TIMEOUT = 1000  # Timeout for LLM API requests in seconds
+MAX_CHUNK_SIZE = 4000  # Maximum characters per chunk for LLM processing
 # ---------------------
  
 class WorkLoggerApp:
@@ -25,6 +27,7 @@ class WorkLoggerApp:
         self.is_running = False
         self.hourly_tasks = []  # Track tasks for the current hour
         self.hour_start_time = None
+        self.session_start_time = None  # Track when the session started
         self.timer_id = None
         self.countdown_id = None
         self.next_checkin_time = None
@@ -109,7 +112,7 @@ class WorkLoggerApp:
         }
  
         try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=1000)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=LLM_REQUEST_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("response", "").strip()
@@ -139,7 +142,7 @@ class WorkLoggerApp:
         }
 
         try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=1000)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=LLM_REQUEST_TIMEOUT)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("response", "").strip()
@@ -147,14 +150,246 @@ class WorkLoggerApp:
                 return f"Error: {response.status_code}"
         except Exception as e:
             return f"LLM Connection Failed: {str(e)}"
+    
+    def read_todays_summaries(self, start_time):
+        """
+        Read all summaries and tasks from today's session from the CSV file.
+        Returns a dict with summaries, tickets, and tasks.
+        """
+        summaries = []
+        tickets = set()
+        tasks = []
+        
+        try:
+            with open(LOG_FILE, mode='r', encoding='utf-8') as file:
+                reader = csv.DictReader(file)
+                for row in reader:
+                    row_time_str = row.get('Start Time', '')
+                    if not row_time_str:
+                        continue
+                    
+                    try:
+                        row_time = datetime.datetime.strptime(row_time_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        continue
+                    
+                    # Only include rows from today's session (after start_time)
+                    if row_time >= start_time:
+                        ai_summary = row.get('AI Summary', '').strip()
+                        title = row.get('Title', '').strip()
+                        ticket = row.get('Ticket', '').strip()
+                        
+                        # Collect summaries (skip markers and empty summaries)
+                        if ai_summary and 'DAY STARTED' not in title and 'DAY ENDED' not in title:
+                            summaries.append(ai_summary)
+                        
+                        # Collect tickets
+                        if ticket:
+                            # Split comma-separated tickets
+                            for t in ticket.split(','):
+                                t = t.strip()
+                                if t:
+                                    tickets.add(t)
+                        
+                        # Collect task info
+                        if title and 'DAY STARTED' not in title and 'DAY ENDED' not in title:
+                            tasks.append({
+                                'title': title,
+                                'ticket': ticket,
+                                'duration': row.get('Duration (Min)', '0')
+                            })
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"Error reading summaries: {e}")
+        
+        return {
+            'summaries': summaries,
+            'tickets': sorted(list(tickets)),
+            'tasks': tasks
+        }
+    
+    def chunk_text(self, text, max_chars=MAX_CHUNK_SIZE):
+        """
+        Split text into chunks for LLM processing.
+        Tries to split at sentence boundaries when possible.
+        """
+        if len(text) <= max_chars:
+            return [text]
+        
+        chunks = []
+        current_chunk = ""
+        
+        # Split by sentences (simple approach)
+        sentences = text.replace('\n', ' ').split('. ')
+        
+        for i, sentence in enumerate(sentences):
+            # Add period back if it was removed (but not for the last sentence which may already have one)
+            if i < len(sentences) - 1 and not sentence.endswith('.'):
+                sentence = sentence + '.'
+            
+            # If adding this sentence would exceed limit
+            if len(current_chunk) + len(sentence) > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk += " " + sentence if current_chunk else sentence
+        
+        # Add remaining chunk
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
+    def generate_day_summary(self, day_data):
+        """
+        Generate a comprehensive end-of-day summary from all summaries.
+        Handles large text by chunking if necessary.
+        """
+        summaries = day_data.get('summaries', [])
+        tickets = day_data.get('tickets', [])
+        tasks = day_data.get('tasks', [])
+        
+        if not summaries and not tasks:
+            return "No work logged today."
+        
+        # Prepare the content to summarize
+        content = "\n\n".join(summaries) if summaries else ""
+        
+        # Add task list
+        if tasks:
+            task_list = "\n".join([f"- {t.get('title')} ({t.get('ticket', 'N/A')}) - {t.get('duration')} min" for t in tasks])
+            content += f"\n\nTasks completed:\n{task_list}"
+        
+        # Check if we need to chunk
+        chunks = self.chunk_text(content, max_chars=MAX_CHUNK_SIZE)
+        
+        if len(chunks) == 1:
+            # Single chunk - process normally
+            prompt = (
+                f"Create a comprehensive end-of-day summary based on the following work:\n\n"
+                f"{content}\n\n"
+                f"Tickets worked on: {', '.join(tickets) if tickets else 'None'}\n\n"
+                "Write a professional summary that:\n"
+                "1. Highlights key accomplishments\n"
+                "2. Lists the tickets/references addressed\n"
+                "3. Provides a cohesive overview of the day's work\n"
+                "Format in Markdown with clear sections."
+            )
+            
+            return self._call_llm_for_summary(prompt)
+        else:
+            # Multiple chunks - summarize incrementally
+            partial_summaries = []
+            
+            for i, chunk in enumerate(chunks):
+                prompt = (
+                    f"Summarize this portion ({i+1}/{len(chunks)}) of the day's work:\n\n"
+                    f"{chunk}\n\n"
+                    "Provide a concise summary of the key points."
+                )
+                partial = self._call_llm_for_summary(prompt)
+                partial_summaries.append(partial)
+            
+            # Final comprehensive summary
+            combined = "\n\n".join(partial_summaries)
+            final_prompt = (
+                f"Create a comprehensive end-of-day summary from these partial summaries:\n\n"
+                f"{combined}\n\n"
+                f"Tickets worked on: {', '.join(tickets) if tickets else 'None'}\n\n"
+                "Write a professional summary that:\n"
+                "1. Highlights key accomplishments\n"
+                "2. Lists the tickets/references addressed\n"
+                "3. Provides a cohesive overview of the day's work\n"
+                "Format in Markdown with clear sections."
+            )
+            
+            return self._call_llm_for_summary(final_prompt)
+    
+    def _call_llm_for_summary(self, prompt):
+        """Helper method to call LLM API"""
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False
+        }
+        
+        try:
+            response = requests.post(OLLAMA_URL, json=payload, timeout=LLM_REQUEST_TIMEOUT)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("response", "").strip()
+            else:
+                return f"Error: {response.status_code}"
+        except Exception as e:
+            return f"LLM Connection Failed: {str(e)}"
+    
+    def show_summary_editor(self, summary_text, tickets):
+        """
+        Display a window to view and edit the day summary before saving.
+        """
+        editor = tk.Toplevel(self.root)
+        editor.title("End of Day Summary")
+        editor.geometry("700x600")
+        editor.transient(self.root)
+        editor.grab_set()
+        
+        # Header
+        tk.Label(editor, text="End of Day Summary", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Tickets section
+        if tickets:
+            ticket_frame = tk.Frame(editor)
+            ticket_frame.pack(fill='x', padx=10, pady=5)
+            tk.Label(ticket_frame, text="Tickets Worked On:", font=("Arial", 10, "bold")).pack(anchor='w')
+            tk.Label(ticket_frame, text=", ".join(tickets), font=("Arial", 9), wraplength=650, justify='left').pack(anchor='w', padx=20)
+        
+        # Instructions
+        tk.Label(editor, text="Review and edit the summary below:", font=("Arial", 10)).pack(pady=5)
+        
+        # Text editor with scrollbar
+        text_frame = tk.Frame(editor)
+        text_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        text_editor = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, font=("Arial", 10))
+        text_editor.pack(fill='both', expand=True)
+        text_editor.insert('1.0', summary_text)
+        
+        # Result variable to capture the edited summary
+        result = {'summary': None, 'saved': False}
+        
+        def on_save():
+            result['summary'] = text_editor.get('1.0', 'end-1c')
+            result['saved'] = True
+            editor.destroy()
+        
+        def on_cancel():
+            result['saved'] = False
+            editor.destroy()
+        
+        # Buttons
+        button_frame = tk.Frame(editor)
+        button_frame.pack(pady=10)
+        
+        tk.Button(button_frame, text="Save Summary", command=on_save, bg="green", fg="white", width=15).pack(side='left', padx=5)
+        tk.Button(button_frame, text="Cancel", command=on_cancel, bg="gray", fg="white", width=15).pack(side='left', padx=5)
+        
+        # Wait for the window to close
+        self.root.wait_window(editor)
+        
+        return result
  
     def start_tracking(self):
         # Log start of day
         start_time = datetime.datetime.now()
+        self.session_start_time = start_time  # Track session start
         self.log_day_marker(start_time, "DAY STARTED")
         
         self.is_running = True
         self.btn_start.config(state=tk.DISABLED)
+        self.btn_add_task.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.NORMAL)
         self.next_checkin_time = start_time + datetime.timedelta(hours=1)
         
         self.status_label.config(text=f"Day started - Add your first task")
@@ -227,10 +462,10 @@ class WorkLoggerApp:
                 task_time.strftime("%Y-%m-%d %H:%M:%S"),
                 round(duration, 2),
                 ticket,
-                resolved,
                 task_details.get('title'),
                 task_details.get('system_info'),
-                ai_summary
+                ai_summary,
+                resolved
             ]
             try:
                 with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
@@ -293,7 +528,8 @@ class WorkLoggerApp:
             ticket_summary,
             f"HOURLY SUMMARY ({len(self.hourly_tasks)} tasks)",
             self.get_system_context(),
-            hourly_summary
+            hourly_summary,
+            ""  # Resolved column
         ]
         
         try:
@@ -320,11 +556,61 @@ class WorkLoggerApp:
         if self.hourly_tasks:
             self.save_hourly_summary(end_time)
         
-        # Log end of day
+        # Generate end-of-day summary
+        if self.session_start_time:
+            self.status_label.config(text="Generating end-of-day summary...")
+            
+            # Read all summaries from today's session
+            day_data = self.read_todays_summaries(self.session_start_time)
+            
+            # Generate comprehensive summary
+            day_summary = self.generate_day_summary(day_data)
+            
+            # Schedule showing the editor on main thread
+            self.root.after(0, lambda: self.show_summary_and_finish(day_summary, day_data['tickets'], end_time))
+        else:
+            # No session start time, just finish normally
+            self.log_day_marker(end_time, "DAY ENDED")
+            self.root.after(0, self.finalize_stop_ui)
+    
+    def show_summary_and_finish(self, day_summary, tickets, end_time):
+        """Show the summary editor and save if user confirms"""
+        # Show editor dialog
+        result = self.show_summary_editor(day_summary, tickets)
+        
+        if result['saved'] and result['summary']:
+            # Save the edited summary to CSV
+            self.save_day_summary(result['summary'], tickets, end_time)
+        
+        # Log end of day marker
         self.log_day_marker(end_time, "DAY ENDED")
         
-        # Schedule UI updates back on the main thread
-        self.root.after(0, self.finalize_stop_ui)
+        # Finalize UI
+        self.finalize_stop_ui()
+    
+    def save_day_summary(self, summary, tickets, end_time):
+        """Save the end-of-day summary to the CSV file"""
+        ticket_list = ", ".join(tickets) if tickets else "All"
+        
+        row = [
+            self.session_start_time.strftime("%Y-%m-%d %H:%M:%S") if self.session_start_time else "",
+            end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            0,  # Duration not applicable for day summary
+            ticket_list,
+            "END OF DAY SUMMARY",
+            self.get_system_context(),
+            summary,
+            ""  # Resolved column
+        ]
+        
+        try:
+            with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                writer.writerow(row)
+                file.flush()
+                print(f"Day summary saved: {len(summary)} characters")
+        except Exception as e:
+            print(f"Error saving day summary: {e}")
  
     def finalize_stop_ui(self):
         self.is_running = False
@@ -375,7 +661,8 @@ class WorkLoggerApp:
                     "",
                     marker_text,
                     self.get_system_context(),
-                    ""
+                    "",
+                    ""  # Resolved column
                 ]
                 writer.writerow(row)
                 file.flush()  # Ensure immediate save
