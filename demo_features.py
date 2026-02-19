@@ -18,7 +18,7 @@ def print_separator():
 
 def demo_new_features():
     """Demonstrate the new features"""
-    print("🐑 SheepCat Work Tracker - New Features Demo")
+    print("🐑🐈 SheepCat Work Tracker - New Features Demo")
     print_separator()
     
     # Create a temporary CSV for the demo
