@@ -47,6 +47,7 @@ class WorkLoggerApp:
         self.timer_id = None
         self.countdown_id = None
         self.next_checkin_time = None
+        self._checkin_in_progress = False  # Guard against stacked check-in prompts
         
         # Create menu bar
         self._create_menu()
@@ -747,29 +748,39 @@ class WorkLoggerApp:
     def hourly_checkin(self):
         if not self.is_running: return
 
-        end_time = datetime.datetime.now()
-        
-        # Generate hourly summary in background
-        threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
- 
-        self.root.deiconify()
-        messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
-        
-        # Ask if the user wants to see their Todo list
-        if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
-            self.show_page("todo")
-        
-        self.next_checkin_time = end_time + datetime.timedelta(
-            minutes=self.settings_manager.get("checkin_interval_minutes"))
-        
-        # Reset for next hour
-        self.hour_start_time = end_time
-        self.hourly_tasks = []
-        
-        self.status_label.config(text=f"New hour started - Add a task")
-        
-        # Prompt for first task of new hour
-        self.add_task()
+        # If a check-in prompt is already open, skip this one to avoid stacking
+        # up multiple dialogs (e.g. after returning from a long meeting).
+        # The in-progress check-in will restart the timer when it finishes.
+        if self._checkin_in_progress:
+            return
+
+        self._checkin_in_progress = True
+        try:
+            end_time = datetime.datetime.now()
+            
+            # Generate hourly summary in background
+            threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
+
+            self.root.deiconify()
+            messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
+            
+            # Ask if the user wants to see their Todo list
+            if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
+                self.show_page("todo")
+            
+            self.next_checkin_time = end_time + datetime.timedelta(
+                minutes=self.settings_manager.get("checkin_interval_minutes"))
+            
+            # Reset for next hour
+            self.hour_start_time = end_time
+            self.hourly_tasks = []
+            
+            self.status_label.config(text=f"New hour started - Add a task")
+            
+            # Prompt for first task of new hour
+            self.add_task()
+        finally:
+            self._checkin_in_progress = False
         
         # Restart timer
         interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
