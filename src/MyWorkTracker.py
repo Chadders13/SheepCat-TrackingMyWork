@@ -165,7 +165,7 @@ class WorkLoggerApp:
     
     def _create_todo_page(self):
         """Create the todo list page"""
-        page = TodoPage(self.container, self.todo_repository)
+        page = TodoPage(self.container, self.todo_repository, self.settings_manager)
         self.pages["todo"] = page
     
     def _on_settings_changed(self):
