@@ -4,10 +4,11 @@ Todo List Page - Manage a personal list of tasks to focus on.
 import tkinter as tk
 from tkinter import ttk, messagebox
 import theme
-from todo_repository import TodoRepository
+from todo_repository import TodoRepository, WEEKDAY_NAMES
 
 
 _PRIORITIES = ("High", "Medium", "Low")
+_REPEAT_OPTIONS = ("None", "Daily", "Specific days")
 
 
 class TodoPage(tk.Frame):
@@ -45,17 +46,19 @@ class TodoPage(tk.Frame):
         list_frame = tk.Frame(self, bg=theme.WINDOW_BG)
         list_frame.pack(fill='both', expand=True, padx=10, pady=5)
 
-        columns = ('task', 'priority', 'status', 'created')
+        columns = ('task', 'priority', 'status', 'repeat', 'created')
         self.todo_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
 
         self.todo_tree.heading('task', text='Task')
         self.todo_tree.heading('priority', text='Priority')
         self.todo_tree.heading('status', text='Status')
+        self.todo_tree.heading('repeat', text='Repeat')
         self.todo_tree.heading('created', text='Created')
 
-        self.todo_tree.column('task', width=350)
+        self.todo_tree.column('task', width=300)
         self.todo_tree.column('priority', width=80)
         self.todo_tree.column('status', width=80)
+        self.todo_tree.column('repeat', width=100)
         self.todo_tree.column('created', width=130)
 
         scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=self.todo_tree.yview)
@@ -115,6 +118,19 @@ class TodoPage(tk.Frame):
 
         todos = self.todo_repository.get_all_todos()
         for todo in todos:
+            repeat_raw = todo.get('Repeat', 'none') or 'none'
+            if repeat_raw == 'daily':
+                repeat_display = 'Daily'
+            elif repeat_raw == 'specific_days':
+                days_str = todo.get('Days', '') or ''
+                day_names = []
+                for d in days_str.split(','):
+                    d = d.strip()
+                    if d.isdigit() and 0 <= int(d) <= 6:
+                        day_names.append(WEEKDAY_NAMES[int(d)][:3])
+                repeat_display = ', '.join(day_names) if day_names else 'Specific days'
+            else:
+                repeat_display = ''
             self.todo_tree.insert(
                 '', 'end',
                 iid=todo.get('ID'),
@@ -122,6 +138,7 @@ class TodoPage(tk.Frame):
                     todo.get('Task', ''),
                     todo.get('Priority', ''),
                     todo.get('Status', ''),
+                    repeat_display,
                     todo.get('Created', ''),
                 ),
             )
@@ -147,7 +164,7 @@ class TodoPage(tk.Frame):
         """Open a dialog to add a new todo item."""
         dialog = tk.Toplevel(self)
         dialog.title("Add Todo Task")
-        dialog.geometry("420x250")
+        dialog.geometry("420x380")
         dialog.transient(self)
         dialog.grab_set()
         dialog.configure(bg=theme.WINDOW_BG)
@@ -189,6 +206,40 @@ class TodoPage(tk.Frame):
             insertbackground=theme.TEXT, relief='flat',
         ).pack(fill='x', padx=15, pady=(0, 10))
 
+        # ── Repeat section ────────────────────────────────────────────────────
+        tk.Label(
+            dialog, text="Repeat:",
+            font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT, anchor='w',
+        ).pack(fill='x', padx=15, pady=(0, 2))
+
+        repeat_var = tk.StringVar(value="None")
+        repeat_combo = ttk.Combobox(
+            dialog, textvariable=repeat_var,
+            values=list(_REPEAT_OPTIONS), state='readonly', width=16,
+        )
+        repeat_combo.pack(anchor='w', padx=15, pady=(0, 6))
+
+        # Days-of-week checkboxes (shown only for "Specific days")
+        days_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        day_vars = [tk.BooleanVar() for _ in WEEKDAY_NAMES]
+        for idx, name in enumerate(WEEKDAY_NAMES):
+            tk.Checkbutton(
+                days_frame, text=name,
+                variable=day_vars[idx],
+                font=theme.FONT_SMALL,
+                bg=theme.WINDOW_BG, fg=theme.TEXT,
+                selectcolor=theme.INPUT_BG,
+                activebackground=theme.WINDOW_BG, activeforeground=theme.TEXT,
+            ).pack(side='left', padx=2)
+
+        def _on_repeat_change(*_):
+            if repeat_var.get() == "Specific days":
+                days_frame.pack(fill='x', padx=15, pady=(0, 8))
+            else:
+                days_frame.pack_forget()
+
+        repeat_var.trace_add('write', _on_repeat_change)
+
         result = {"ok": False}
 
         def on_ok():
@@ -196,10 +247,27 @@ class TodoPage(tk.Frame):
             if not task:
                 messagebox.showwarning("Input Required", "Please enter a task description.", parent=dialog)
                 return
-            result["task"] = task
-            result["priority"] = priority_var.get()
-            result["notes"] = notes_var.get().strip()
-            result["ok"] = True
+            repeat_choice = repeat_var.get()
+            if repeat_choice == "None":
+                repeat_val = "none"
+                days_val = ""
+            elif repeat_choice == "Daily":
+                repeat_val = "daily"
+                days_val = ""
+            else:  # Specific days
+                repeat_val = "specific_days"
+                days_val = ",".join(str(i) for i, v in enumerate(day_vars) if v.get())
+                if not days_val:
+                    messagebox.showwarning("No Days Selected", "Please select at least one day.", parent=dialog)
+                    return
+            result.update({
+                "task": task,
+                "priority": priority_var.get(),
+                "notes": notes_var.get().strip(),
+                "repeat": repeat_val,
+                "days": days_val,
+                "ok": True,
+            })
             dialog.destroy()
 
         btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
@@ -219,7 +287,10 @@ class TodoPage(tk.Frame):
         self.wait_window(dialog)
 
         if result.get("ok"):
-            if self.todo_repository.add_todo(result["task"], result["priority"], result["notes"]):
+            if self.todo_repository.add_todo(
+                result["task"], result["priority"], result["notes"],
+                result["repeat"], result["days"],
+            ):
                 self._load_todos()
                 self.status_label.config(text="Task added.")
             else:

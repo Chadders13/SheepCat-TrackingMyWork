@@ -666,6 +666,9 @@ class WorkLoggerApp:
         
         self.status_label.config(text=f"Day started - Add your first task")
         
+        # Gently surface any recurring tasks scheduled for today
+        self._show_todays_recurring_tasks()
+        
         # Add first task
         self.add_task()
 
@@ -751,9 +754,15 @@ class WorkLoggerApp:
         
         # Generate hourly summary in background
         threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
- 
+
         self.root.deiconify()
         messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
+        
+        # Follow up on any tasks the user committed to at the last check-in
+        self._follow_up_committed_tasks()
+        
+        # Surface recurring tasks for today and let the user commit to any
+        self._show_checkin_recurring_tasks()
         
         # Ask if the user wants to see their Todo list
         if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
@@ -774,7 +783,144 @@ class WorkLoggerApp:
         # Restart timer
         interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
         self.timer_id = self.root.after(interval_ms, self.hourly_checkin)
-    
+
+    def _show_todays_recurring_tasks(self):
+        """Gently surface recurring tasks that are scheduled for today at day start."""
+        due = self.todo_repository.get_todos_due_today()
+        if not due:
+            return
+        lines = "\n".join(f"  • {t.get('Task', '')}" for t in due)
+        messagebox.showinfo(
+            "Today's Recurring Tasks 🐾",
+            f"Here are your recurring tasks for today:\n\n{lines}\n\n"
+            "They'll be shown again at each check-in so nothing slips through the net.",
+        )
+
+    def _show_checkin_recurring_tasks(self):
+        """Show recurring tasks due today at a check-in; let user commit to any."""
+        due = self.todo_repository.get_todos_due_today()
+        if not due:
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Recurring Tasks — Check-in 🐾")
+        dialog.geometry("480x380")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            dialog,
+            text="Recurring Tasks for Today",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(anchor='w', padx=15, pady=(15, 4))
+
+        tk.Label(
+            dialog,
+            text="Tick any tasks you plan to look at before the next check-in:",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).pack(anchor='w', padx=15, pady=(0, 8))
+
+        commit_vars = {}
+        scroll_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        scroll_frame.pack(fill='both', expand=True, padx=15)
+
+        for todo in due:
+            var = tk.BooleanVar()
+            commit_vars[todo.get('ID')] = var
+            tk.Checkbutton(
+                scroll_frame,
+                text=f"{todo.get('Task', '')}",
+                variable=var,
+                font=theme.FONT_BODY,
+                bg=theme.WINDOW_BG, fg=theme.TEXT,
+                selectcolor=theme.INPUT_BG,
+                activebackground=theme.WINDOW_BG, activeforeground=theme.TEXT,
+                anchor='w', wraplength=420,
+            ).pack(fill='x', pady=2)
+
+        def on_ok():
+            for todo_id, var in commit_vars.items():
+                if var.get():
+                    self.todo_repository.set_committed(todo_id)
+                else:
+                    # Clear any previous commit so stale commitments don't linger
+                    self.todo_repository.clear_committed(todo_id)
+            dialog.destroy()
+
+        tk.Button(
+            dialog, text="OK", command=on_ok,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_BODY, width=12, relief='flat', cursor='hand2',
+            padx=8, pady=4,
+        ).pack(pady=12)
+
+        self.root.wait_window(dialog)
+
+    def _follow_up_committed_tasks(self):
+        """Ask whether the user managed to complete any committed tasks."""
+        committed = self.todo_repository.get_committed_todos()
+        if not committed:
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Following Up 🐑")
+        dialog.geometry("480x360")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            dialog,
+            text="Last time you said you'd look at these…",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(anchor='w', padx=15, pady=(15, 4))
+
+        tk.Label(
+            dialog,
+            text="Did you manage to complete any of them? Tick those that are done:",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).pack(anchor='w', padx=15, pady=(0, 8))
+
+        done_vars = {}
+        scroll_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        scroll_frame.pack(fill='both', expand=True, padx=15)
+
+        for todo in committed:
+            var = tk.BooleanVar()
+            done_vars[todo.get('ID')] = var
+            tk.Checkbutton(
+                scroll_frame,
+                text=f"{todo.get('Task', '')}",
+                variable=var,
+                font=theme.FONT_BODY,
+                bg=theme.WINDOW_BG, fg=theme.TEXT,
+                selectcolor=theme.INPUT_BG,
+                activebackground=theme.WINDOW_BG, activeforeground=theme.TEXT,
+                anchor='w', wraplength=420,
+            ).pack(fill='x', pady=2)
+
+        def on_ok():
+            for todo in committed:
+                todo_id = todo.get('ID')
+                # Always clear the committed flag after follow-up
+                self.todo_repository.clear_committed(todo_id)
+                if done_vars.get(todo_id) and done_vars[todo_id].get():
+                    # Non-recurring tasks can be marked Done; recurring ones stay Pending
+                    repeat = todo.get('Repeat', 'none') or 'none'
+                    if repeat == 'none':
+                        self.todo_repository.update_todo_status(todo_id, 'Done')
+            dialog.destroy()
+
+        tk.Button(
+            dialog, text="OK", command=on_ok,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_BODY, width=12, relief='flat', cursor='hand2',
+            padx=8, pady=4,
+        ).pack(pady=12)
+
+        self.root.wait_window(dialog)
+
     def save_hourly_summary(self, end_time):
         """Generate and save a summary of all tasks from the hour"""
         if not self.hourly_tasks or self.hour_start_time is None:

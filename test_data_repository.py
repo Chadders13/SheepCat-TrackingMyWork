@@ -206,7 +206,7 @@ class TestTodoRepository(unittest.TestCase):
         self.assertTrue(os.path.exists(self.csv_path))
         with open(self.csv_path, 'r') as f:
             headers = f.readline().strip()
-        self.assertEqual(headers, "ID,Task,Priority,Status,Created,Notes")
+        self.assertEqual(headers, "ID,Task,Priority,Status,Created,Notes,Repeat,Days,CommittedAt")
 
     def test_add_and_get_todos(self):
         """add_todo() should persist items retrievable by get_all_todos()."""
@@ -273,6 +273,96 @@ class TestTodoRepository(unittest.TestCase):
         remaining = self.repo.get_all_todos()
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]['Task'], 'Keep me')
+
+    # ── Recurring-task tests ───────────────────────────────────────────────────
+
+    def test_add_todo_with_repeat_daily(self):
+        """add_todo() should persist repeat='daily' and retrieve it."""
+        self.repo.initialize()
+        self.repo.add_todo("Stand-up", repeat="daily")
+        todos = self.repo.get_all_todos()
+        self.assertEqual(todos[0]['Repeat'], 'daily')
+        self.assertEqual(todos[0]['Days'], '')
+
+    def test_add_todo_with_specific_days(self):
+        """add_todo() should persist repeat='specific_days' with days list."""
+        self.repo.initialize()
+        self.repo.add_todo("Weekly review", repeat="specific_days", days="0,4")
+        todos = self.repo.get_all_todos()
+        self.assertEqual(todos[0]['Repeat'], 'specific_days')
+        self.assertEqual(todos[0]['Days'], '0,4')
+
+    def test_get_todos_due_today_daily(self):
+        """Daily tasks should appear in get_todos_due_today() every day."""
+        self.repo.initialize()
+        self.repo.add_todo("Daily stand-up", repeat="daily")
+        self.repo.add_todo("One-off task")  # should NOT appear
+        due = self.repo.get_todos_due_today()
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]['Task'], 'Daily stand-up')
+
+    def test_get_todos_due_today_specific_days(self):
+        """Tasks with specific_days should appear only on matching weekdays."""
+        self.repo.initialize()
+        today_wd = datetime.date.today().weekday()
+        tomorrow_wd = (today_wd + 1) % 7
+        # Task for today
+        self.repo.add_todo("Today task", repeat="specific_days", days=str(today_wd))
+        # Task for tomorrow only
+        self.repo.add_todo("Tomorrow task", repeat="specific_days", days=str(tomorrow_wd))
+        due = self.repo.get_todos_due_today()
+        due_tasks = [t['Task'] for t in due]
+        self.assertIn("Today task", due_tasks)
+        self.assertNotIn("Tomorrow task", due_tasks)
+
+    def test_get_todos_due_today_no_repeat(self):
+        """Tasks with repeat='none' must not appear in get_todos_due_today()."""
+        self.repo.initialize()
+        self.repo.add_todo("One-off task")  # default repeat='none'
+        due = self.repo.get_todos_due_today()
+        self.assertEqual(len(due), 0)
+
+    def test_set_and_get_committed(self):
+        """set_committed() should mark a task; get_committed_todos() should return it."""
+        self.repo.initialize()
+        self.repo.add_todo("Look at this later", repeat="daily")
+        todos = self.repo.get_all_todos()
+        todo_id = todos[0]['ID']
+
+        result = self.repo.set_committed(todo_id)
+        self.assertTrue(result)
+
+        committed = self.repo.get_committed_todos()
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(committed[0]['ID'], todo_id)
+        self.assertNotEqual(committed[0]['CommittedAt'], '')
+
+    def test_clear_committed(self):
+        """clear_committed() should remove the CommittedAt value."""
+        self.repo.initialize()
+        self.repo.add_todo("Look at this later", repeat="daily")
+        todos = self.repo.get_all_todos()
+        todo_id = todos[0]['ID']
+
+        self.repo.set_committed(todo_id)
+        self.assertEqual(len(self.repo.get_committed_todos()), 1)
+
+        self.repo.clear_committed(todo_id)
+        self.assertEqual(len(self.repo.get_committed_todos()), 0)
+
+    def test_backward_compat_short_rows(self):
+        """Repositories with old 6-column CSVs should still update correctly."""
+        # Write a legacy CSV with only 6 columns
+        with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
+            import csv as _csv
+            writer = _csv.writer(f)
+            writer.writerow(["ID", "Task", "Priority", "Status", "Created", "Notes"])
+            writer.writerow(["1", "Old task", "Medium", "Pending", "2024-01-01 08:00:00", ""])
+
+        result = self.repo.update_todo_status("1", "Done")
+        self.assertTrue(result)
+        todos = self.repo.get_all_todos()
+        self.assertEqual(todos[0]['Status'], 'Done')
 
 
 if __name__ == '__main__':
