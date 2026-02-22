@@ -2,7 +2,9 @@
 Todo List Page - Manage a personal list of tasks to focus on.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+import requests
 import theme
 from todo_repository import TodoRepository
 
@@ -13,16 +15,18 @@ _PRIORITIES = ("High", "Medium", "Low")
 class TodoPage(tk.Frame):
     """Page for managing a personal todo/focus list."""
 
-    def __init__(self, parent, todo_repository: TodoRepository):
+    def __init__(self, parent, todo_repository: TodoRepository, settings_manager=None):
         """
         Initialize the Todo page.
 
         Args:
             parent: Parent tkinter widget
             todo_repository: TodoRepository instance
+            settings_manager: Optional SettingsManager instance for AI features
         """
         super().__init__(parent, bg=theme.WINDOW_BG)
         self.todo_repository = todo_repository
+        self.settings_manager = settings_manager
         self._create_widgets()
         self._load_todos()
 
@@ -96,6 +100,13 @@ class TodoPage(tk.Frame):
             btn_frame, text="Delete", command=self._delete_todo,
             bg=theme.RED, fg=theme.TEXT,
             font=theme.FONT_BODY, width=12, relief='flat', cursor='hand2',
+            padx=8, pady=4,
+        ).pack(side='left', padx=4)
+
+        tk.Button(
+            btn_frame, text="AI Suggest Order", command=self._ai_suggest_order,
+            bg=theme.ACCENT, fg=theme.WINDOW_BG,
+            font=theme.FONT_BODY, width=16, relief='flat', cursor='hand2',
             padx=8, pady=4,
         ).pack(side='left', padx=4)
 
@@ -264,6 +275,124 @@ class TodoPage(tk.Frame):
             if self.todo_repository.delete_todo(todo_id):
                 self.todo_tree.delete(todo_id)
         self._load_todos()
+
+    # ── AI suggestion ──────────────────────────────────────────────────────────
+
+    def _ai_suggest_order(self):
+        """Ask the AI to suggest a completion order for pending tasks."""
+        if self.settings_manager is None:
+            messagebox.showinfo(
+                "AI Not Available",
+                "AI features are not configured. Please check settings.",
+            )
+            return
+
+        todos = self.todo_repository.get_all_todos()
+        pending = [t for t in todos if t.get('Status') == 'Pending']
+
+        if not pending:
+            messagebox.showinfo("No Pending Tasks", "There are no pending tasks to order.")
+            return
+
+        # Build the task list string for the prompt
+        task_lines = []
+        for i, t in enumerate(pending, start=1):
+            notes = t.get('Notes', '').strip()
+            note_part = f" — Notes: {notes}" if notes else ""
+            task_lines.append(
+                f"{i}. [{t.get('Priority', 'Medium')}] {t.get('Task', '')}{note_part}"
+            )
+        task_list_str = "\n".join(task_lines)
+
+        prompt = (
+            "You are a productivity assistant helping someone prioritise their work.\n"
+            "Below is a list of pending tasks with their priorities and any notes.\n\n"
+            f"{task_list_str}\n\n"
+            "Please suggest the best order to tackle these tasks and briefly explain "
+            "your reasoning for each placement. Consider urgency implied by priority, "
+            "dependencies, and logical groupings. Format your response clearly with a "
+            "numbered list followed by a short explanation."
+        )
+
+        # Show a 'thinking' dialog while the AI works
+        thinking_win = tk.Toplevel(self)
+        thinking_win.title("AI Suggestion")
+        thinking_win.geometry("320x100")
+        thinking_win.transient(self)
+        thinking_win.configure(bg=theme.WINDOW_BG)
+        tk.Label(
+            thinking_win,
+            text="Asking AI for a suggested order…",
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.TEXT,
+            wraplength=280,
+        ).pack(expand=True, pady=20)
+
+        def _run():
+            result = self._call_ai(prompt)
+            self.after(0, lambda: self._show_ai_result(result, thinking_win))
+
+        threading.Thread(target=_run).start()
+
+    def _call_ai(self, prompt: str) -> str:
+        """Send *prompt* to the configured LLM and return the response text."""
+        payload = {
+            "model": self.settings_manager.get("ai_model"),
+            "prompt": prompt,
+            "stream": False,
+        }
+        try:
+            response = requests.post(
+                self.settings_manager.get("ai_api_url"),
+                json=payload,
+                timeout=self.settings_manager.get("llm_request_timeout"),
+            )
+            if response.status_code == 200:
+                text = response.json().get("response", "").strip()
+                return text if text else "AI returned an empty response. Please try again."
+            return f"Error: HTTP {response.status_code}"
+        except requests.exceptions.Timeout:
+            return "AI request timed out. Please try again or check your timeout settings."
+        except Exception as e:
+            return f"AI connection failed: {e}"
+
+    def _show_ai_result(self, result: str, thinking_win: tk.Toplevel):
+        """Close the thinking dialog and display the AI suggestion."""
+        thinking_win.destroy()
+
+        win = tk.Toplevel(self)
+        win.title("AI Suggested Task Order")
+        win.geometry("600x480")
+        win.transient(self)
+        win.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            win, text="AI Suggested Order",
+            font=theme.FONT_H2, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(pady=(12, 4))
+
+        tk.Label(
+            win,
+            text="Here is the AI's suggested order for your pending tasks:",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).pack(pady=(0, 6))
+
+        text_area = scrolledtext.ScrolledText(
+            win, wrap=tk.WORD,
+            font=theme.FONT_BODY,
+            bg=theme.INPUT_BG, fg=theme.TEXT,
+            insertbackground=theme.TEXT,
+            relief='flat', padx=8, pady=6,
+            state='normal',
+        )
+        text_area.pack(fill='both', expand=True, padx=12, pady=4)
+        text_area.insert('1.0', result)
+        text_area.config(state='disabled')
+
+        tk.Button(
+            win, text="Close", command=win.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_BODY, width=12, relief='flat', cursor='hand2',
+        ).pack(pady=10)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
