@@ -188,6 +188,78 @@ class TestCSVDataRepository(unittest.TestCase):
         self.assertEqual(tasks[0]['Title'], 'Task 2')
         self.assertEqual(tasks[1]['Title'], 'Task 3')
 
+    def _make_marker(self, dt_str, title):
+        return {
+            'start_time': dt_str,
+            'end_time': dt_str,
+            'duration': 0,
+            'ticket': '',
+            'title': title,
+            'system_info': 'Test',
+            'ai_summary': '',
+            'resolved': ''
+        }
+
+    def _find_unfinished_session(self, tasks):
+        """Mirror of WorkLoggerApp.find_unfinished_session for unit-testing."""
+        last_start_time = None
+        for task in tasks:
+            title = task.get('Title', '')
+            if 'DAY STARTED' in title:
+                last_start_time = task.get('start_time_obj')
+            elif 'DAY ENDED' in title and last_start_time is not None:
+                last_start_time = None
+        return last_start_time
+
+    def test_find_unfinished_session_detects_missing_end(self):
+        """If DAY STARTED has no DAY ENDED, unfinished session is detected."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        dt_str = today.strftime('%Y-%m-%d') + ' 09:00:00'
+        self.repo.log_task(self._make_marker(dt_str, 'DAY STARTED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date(), today)
+
+    def test_find_unfinished_session_none_when_ended(self):
+        """If DAY STARTED is followed by DAY ENDED, no unfinished session."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        dt_start = today.strftime('%Y-%m-%d') + ' 09:00:00'
+        dt_end = today.strftime('%Y-%m-%d') + ' 17:00:00'
+        self.repo.log_task(self._make_marker(dt_start, 'DAY STARTED'))
+        self.repo.log_task(self._make_marker(dt_end, 'DAY ENDED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNone(result)
+
+    def test_find_unfinished_session_none_when_no_entries(self):
+        """Empty log means no unfinished session."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNone(result)
+
+    def test_find_unfinished_session_last_session_takes_precedence(self):
+        """When multiple sessions exist, only the last unclosed one is returned."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        base = today.strftime('%Y-%m-%d')
+        # First session: properly ended
+        self.repo.log_task(self._make_marker(base + ' 08:00:00', 'DAY STARTED'))
+        self.repo.log_task(self._make_marker(base + ' 12:00:00', 'DAY ENDED'))
+        # Second session: no end marker
+        self.repo.log_task(self._make_marker(base + ' 13:00:00', 'DAY STARTED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 13)
+
 
 class TestTodoRepository(unittest.TestCase):
     def setUp(self):

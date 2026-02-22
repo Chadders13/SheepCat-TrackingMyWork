@@ -64,6 +64,9 @@ class WorkLoggerApp:
         
         # Show tracker page by default
         self.show_page("tracker")
+        
+        # Check for an unfinished session on startup
+        self._update_continue_button()
     
     def _create_menu(self):
         """Create the menu bar"""
@@ -124,6 +127,15 @@ class WorkLoggerApp:
         )
         btn_start.pack(pady=5)
         self.btn_start = btn_start
+
+        btn_continue = tk.Button(
+            page, text="Continue Day", command=self.continue_tracking,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_BODY_BOLD, width=20,
+            state=tk.DISABLED, relief='flat', cursor='hand2', padx=8, pady=6,
+        )
+        btn_continue.pack(pady=5)
+        self.btn_continue = btn_continue
 
         btn_add_task = tk.Button(
             page, text="Add Task", command=self.add_task,
@@ -643,6 +655,73 @@ class WorkLoggerApp:
         
         return result
  
+    def find_unfinished_session(self):
+        """
+        Check today's log for a session that was started but never ended.
+        Returns the session start datetime if an unfinished session is found,
+        or None if no unfinished session exists.
+        """
+        today = datetime.date.today()
+        tasks = self.data_repository.get_tasks_by_date(today)
+
+        last_start_time = None
+
+        for task in tasks:
+            title = task.get('Title', '')
+            if 'DAY STARTED' in title:
+                last_start_time = task.get('start_time_obj')
+            elif 'DAY ENDED' in title and last_start_time is not None:
+                # This start was properly ended
+                last_start_time = None
+
+        return last_start_time
+
+    def _update_continue_button(self):
+        """Enable or disable the 'Continue Day' button based on today's log."""
+        unfinished = self.find_unfinished_session()
+        if unfinished is not None:
+            self.btn_continue.config(state=tk.NORMAL)
+            self.status_label.config(
+                text=f"Unfinished session found from {unfinished.strftime('%H:%M')} — continue or start fresh"
+            )
+        else:
+            self.btn_continue.config(state=tk.DISABLED)
+
+    def continue_tracking(self):
+        """Resume tracking from an unfinished session started earlier today."""
+        session_start = self.find_unfinished_session()
+        if session_start is None:
+            messagebox.showinfo("No Unfinished Session",
+                                "No unfinished session found for today.")
+            return
+
+        now = datetime.datetime.now()
+        self.session_start_time = session_start  # Use the original session start
+        self.is_running = True
+        self.btn_start.config(state=tk.DISABLED)
+        self.btn_continue.config(state=tk.DISABLED)
+        self.btn_add_task.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.NORMAL)
+        self.next_checkin_time = now + datetime.timedelta(
+            minutes=self.settings_manager.get("checkin_interval_minutes"))
+
+        self.status_label.config(
+            text=f"Continuing session from {session_start.strftime('%H:%M')} — add your next task"
+        )
+
+        # Start countdown timer
+        self.update_countdown()
+
+        self.hour_start_time = now
+        self.hourly_tasks = []
+
+        # Schedule next check-in
+        interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
+        self.timer_id = self.root.after(interval_ms, self.hourly_checkin)
+
+        # Prompt for the next task
+        self.add_task()
+
     def start_tracking(self):
         # Log start of day
         start_time = datetime.datetime.now()
@@ -651,6 +730,7 @@ class WorkLoggerApp:
         
         self.is_running = True
         self.btn_start.config(state=tk.DISABLED)
+        self.btn_continue.config(state=tk.DISABLED)
         self.btn_add_task.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.NORMAL)
         self.next_checkin_time = start_time + datetime.timedelta(
@@ -908,6 +988,8 @@ class WorkLoggerApp:
         self.btn_start.config(state=tk.NORMAL)
         self.btn_add_task.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.DISABLED)
+        # After a clean stop the session is ended, so no unfinished session
+        self.btn_continue.config(state=tk.DISABLED)
         messagebox.showinfo("Done", "Tracking stopped and saved.")
     
     def update_countdown(self):
