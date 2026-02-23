@@ -4,7 +4,7 @@ Todo List Page - Manage a personal list of tasks to focus on.
 import tkinter as tk
 from tkinter import ttk, messagebox
 import theme
-from todo_repository import TodoRepository
+from todo_repository import TodoRepository, extract_due_date as _extract_due_date
 
 
 _PRIORITIES = ("High", "Medium", "Low")
@@ -45,17 +45,19 @@ class TodoPage(tk.Frame):
         list_frame = tk.Frame(self, bg=theme.WINDOW_BG)
         list_frame.pack(fill='both', expand=True, padx=10, pady=5)
 
-        columns = ('task', 'priority', 'status', 'created')
+        columns = ('task', 'priority', 'status', 'due_date', 'created')
         self.todo_tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=15)
 
         self.todo_tree.heading('task', text='Task')
         self.todo_tree.heading('priority', text='Priority')
         self.todo_tree.heading('status', text='Status')
+        self.todo_tree.heading('due_date', text='Complete By')
         self.todo_tree.heading('created', text='Created')
 
-        self.todo_tree.column('task', width=350)
+        self.todo_tree.column('task', width=300)
         self.todo_tree.column('priority', width=80)
         self.todo_tree.column('status', width=80)
+        self.todo_tree.column('due_date', width=130)
         self.todo_tree.column('created', width=130)
 
         scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=self.todo_tree.yview)
@@ -122,6 +124,7 @@ class TodoPage(tk.Frame):
                     todo.get('Task', ''),
                     todo.get('Priority', ''),
                     todo.get('Status', ''),
+                    todo.get('DueDate', ''),
                     todo.get('Created', ''),
                 ),
             )
@@ -147,7 +150,7 @@ class TodoPage(tk.Frame):
         """Open a dialog to add a new todo item."""
         dialog = tk.Toplevel(self)
         dialog.title("Add Todo Task")
-        dialog.geometry("420x250")
+        dialog.geometry("420x330")
         dialog.transient(self)
         dialog.grab_set()
         dialog.configure(bg=theme.WINDOW_BG)
@@ -178,6 +181,36 @@ class TodoPage(tk.Frame):
         priority_combo.pack(anchor='w', padx=15, pady=(0, 10))
 
         tk.Label(
+            dialog, text="Complete By (YYYY-MM-DD HH:MM, optional):",
+            font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT, anchor='w',
+        ).pack(fill='x', padx=15, pady=(0, 2))
+
+        due_date_var = tk.StringVar()
+        due_date_entry = tk.Entry(
+            dialog, textvariable=due_date_var,
+            font=theme.FONT_BODY, bg=theme.INPUT_BG, fg=theme.TEXT,
+            insertbackground=theme.TEXT, relief='flat',
+        )
+        due_date_entry.pack(fill='x', padx=15, pady=(0, 4))
+
+        hint_label = tk.Label(
+            dialog, text="",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
+        )
+        hint_label.pack(fill='x', padx=15, pady=(0, 6))
+
+        def _on_task_change(*_):
+            """Auto-detect a due date/time from the task description."""
+            detected = _extract_due_date(task_var.get())
+            if detected:
+                due_date_var.set(detected)
+                hint_label.config(text=f"⏰ Due date detected from description")
+            else:
+                hint_label.config(text="")
+
+        task_var.trace_add('write', _on_task_change)
+
+        tk.Label(
             dialog, text="Notes (optional):",
             font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT, anchor='w',
         ).pack(fill='x', padx=15, pady=(0, 2))
@@ -198,6 +231,7 @@ class TodoPage(tk.Frame):
                 return
             result["task"] = task
             result["priority"] = priority_var.get()
+            result["due_date"] = due_date_var.get().strip()
             result["notes"] = notes_var.get().strip()
             result["ok"] = True
             dialog.destroy()
@@ -219,7 +253,9 @@ class TodoPage(tk.Frame):
         self.wait_window(dialog)
 
         if result.get("ok"):
-            if self.todo_repository.add_todo(result["task"], result["priority"], result["notes"]):
+            if self.todo_repository.add_todo(
+                result["task"], result["priority"], result["notes"], result["due_date"]
+            ):
                 self._load_todos()
                 self.status_label.config(text="Task added.")
             else:

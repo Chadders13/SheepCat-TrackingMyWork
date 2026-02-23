@@ -771,7 +771,20 @@ class WorkLoggerApp:
 
             self.root.deiconify()
             messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
-            
+
+            # Alert if any todos are due soon or overdue
+            interval = self.settings_manager.get("checkin_interval_minutes")
+            due_todos = self.todo_repository.get_due_todos(window_minutes=interval)
+            if due_todos:
+                lines = "\n".join(
+                    f"• {t.get('Task', '')} (due: {t.get('DueDate', '')})"
+                    for t in due_todos
+                )
+                messagebox.showwarning(
+                    "⏰ Todo Reminder",
+                    f"You have {len(due_todos)} task(s) that need attention:\n\n{lines}"
+                )
+
             # Ask if the user wants to see their Todo list
             if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
                 self.show_page("todo")
