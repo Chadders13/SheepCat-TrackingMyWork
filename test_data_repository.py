@@ -206,7 +206,7 @@ class TestTodoRepository(unittest.TestCase):
         self.assertTrue(os.path.exists(self.csv_path))
         with open(self.csv_path, 'r') as f:
             headers = f.readline().strip()
-        self.assertEqual(headers, "ID,Task,Priority,Status,Created,Notes")
+        self.assertEqual(headers, "ID,Task,Priority,Status,Created,Notes,DueDate")
 
     def test_add_and_get_todos(self):
         """add_todo() should persist items retrievable by get_all_todos()."""
@@ -273,6 +273,122 @@ class TestTodoRepository(unittest.TestCase):
         remaining = self.repo.get_all_todos()
         self.assertEqual(len(remaining), 1)
         self.assertEqual(remaining[0]['Task'], 'Keep me')
+
+    def test_add_todo_with_due_date(self):
+        """add_todo() should persist the due_date field."""
+        self.repo.initialize()
+        self.repo.add_todo("Submit report", due_date="2099-12-31 17:00")
+        todos = self.repo.get_all_todos()
+        self.assertEqual(todos[0]['DueDate'], "2099-12-31 17:00")
+
+    def test_add_todo_without_due_date(self):
+        """add_todo() should store an empty DueDate when none is supplied."""
+        self.repo.initialize()
+        self.repo.add_todo("No deadline")
+        todos = self.repo.get_all_todos()
+        self.assertEqual(todos[0].get('DueDate', ''), '')
+
+    def test_initialize_creates_file_with_due_date_header(self):
+        """initialize() should create a CSV that includes the DueDate column."""
+        self.repo.initialize()
+        with open(self.csv_path, 'r') as f:
+            headers = f.readline().strip()
+        self.assertIn("DueDate", headers)
+
+    def test_initialize_migrates_existing_file(self):
+        """initialize() should add DueDate to a CSV that was created without it."""
+        # Write an old-style CSV without DueDate
+        with open(self.csv_path, 'w', newline='', encoding='utf-8') as f:
+            import csv as _csv
+            writer = _csv.writer(f)
+            writer.writerow(["ID", "Task", "Priority", "Status", "Created", "Notes"])
+            writer.writerow(["1", "Old task", "Low", "Pending", "2024-01-01 09:00:00", ""])
+        self.repo.initialize()
+        todos = self.repo.get_all_todos()
+        self.assertIn('DueDate', todos[0])
+        self.assertEqual(todos[0]['DueDate'], '')
+
+    def test_get_due_todos_returns_overdue(self):
+        """get_due_todos() should include todos that are past due."""
+        self.repo.initialize()
+        self.repo.add_todo("Overdue task", due_date="2000-01-01 09:00")
+        due = self.repo.get_due_todos(window_minutes=60)
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]['Task'], 'Overdue task')
+
+    def test_get_due_todos_excludes_done(self):
+        """get_due_todos() should not include tasks marked Done."""
+        self.repo.initialize()
+        self.repo.add_todo("Done task", due_date="2000-01-01 09:00")
+        todos = self.repo.get_all_todos()
+        self.repo.update_todo_status(todos[0]['ID'], 'Done')
+        due = self.repo.get_due_todos(window_minutes=60)
+        self.assertEqual(len(due), 0)
+
+    def test_get_due_todos_excludes_far_future(self):
+        """get_due_todos() should not include todos due far in the future."""
+        self.repo.initialize()
+        self.repo.add_todo("Future task", due_date="2099-12-31 23:59")
+        due = self.repo.get_due_todos(window_minutes=60)
+        self.assertEqual(len(due), 0)
+
+    def test_get_due_todos_no_due_date(self):
+        """get_due_todos() should ignore todos without a due date."""
+        self.repo.initialize()
+        self.repo.add_todo("No deadline task")
+        due = self.repo.get_due_todos(window_minutes=60)
+        self.assertEqual(len(due), 0)
+
+
+class TestExtractDueDate(unittest.TestCase):
+    """Tests for the extract_due_date helper in todo_repository."""
+
+    def setUp(self):
+        from todo_repository import extract_due_date
+        self.extract = extract_due_date
+        self.today = datetime.date.today().strftime("%Y-%m-%d")
+        tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        self.tomorrow = tomorrow
+
+    def test_am_pm_no_minutes(self):
+        result = self.extract("finish the report by 3pm")
+        self.assertEqual(result, f"{self.today} 15:00")
+
+    def test_am_pm_with_minutes(self):
+        result = self.extract("submit by 10:30 AM")
+        self.assertEqual(result, f"{self.today} 10:30")
+
+    def test_24_hour(self):
+        result = self.extract("deploy at 14:00")
+        self.assertEqual(result, f"{self.today} 14:00")
+
+    def test_named_noon(self):
+        result = self.extract("done before noon")
+        self.assertEqual(result, f"{self.today} 12:00")
+
+    def test_named_eod(self):
+        result = self.extract("complete by EOD")
+        self.assertEqual(result, f"{self.today} 17:00")
+
+    def test_named_end_of_day(self):
+        result = self.extract("finish by end of day")
+        self.assertEqual(result, f"{self.today} 17:00")
+
+    def test_tomorrow(self):
+        result = self.extract("do this tomorrow")
+        self.assertEqual(result, self.tomorrow)
+
+    def test_tomorrow_with_time(self):
+        result = self.extract("meeting tomorrow at 9am")
+        self.assertEqual(result, f"{self.tomorrow} 09:00")
+
+    def test_no_time_returns_empty(self):
+        result = self.extract("fix the login bug")
+        self.assertEqual(result, "")
+
+    def test_today_keyword(self):
+        result = self.extract("finish today")
+        self.assertEqual(result, self.today)
 
 
 if __name__ == '__main__':
