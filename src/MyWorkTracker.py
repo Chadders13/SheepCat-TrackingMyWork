@@ -47,6 +47,7 @@ class WorkLoggerApp:
         self.timer_id = None
         self.countdown_id = None
         self.next_checkin_time = None
+        self._checkin_in_progress = False  # Guard against stacked check-in prompts
         
         # Create menu bar
         self._create_menu()
@@ -64,6 +65,9 @@ class WorkLoggerApp:
         
         # Show tracker page by default
         self.show_page("tracker")
+        
+        # Check for an unfinished session on startup
+        self._update_continue_button()
     
     def _create_menu(self):
         """Create the menu bar"""
@@ -125,6 +129,15 @@ class WorkLoggerApp:
         btn_start.pack(pady=5)
         self.btn_start = btn_start
 
+        btn_continue = tk.Button(
+            page, text="Continue Day", command=self.continue_tracking,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_BODY_BOLD, width=20,
+            state=tk.DISABLED, relief='flat', cursor='hand2', padx=8, pady=6,
+        )
+        btn_continue.pack(pady=5)
+        self.btn_continue = btn_continue
+
         btn_add_task = tk.Button(
             page, text="Add Task", command=self.add_task,
             bg=theme.PRIMARY, fg=theme.TEXT,
@@ -165,9 +178,23 @@ class WorkLoggerApp:
     
     def _create_todo_page(self):
         """Create the todo list page"""
-        page = TodoPage(self.container, self.todo_repository)
+        page = TodoPage(self.container, self.todo_repository,
+                        on_archive=self._archive_done_todos)
         self.pages["todo"] = page
     
+    def _archive_done_todos(self):
+        """Archive done todo items if the setting is enabled."""
+        if not self.settings_manager.get("archive_done_todos"):
+            return
+        archive_path = self.settings_manager.get_archive_file_path()
+        count = self.todo_repository.archive_done_todos(archive_path)
+        if count:
+            print(f"Archived {count} done todo(s) to {archive_path}")
+            # Refresh the todo page if it is currently visible
+            todo_page = self.pages.get("todo")
+            if todo_page:
+                todo_page.refresh()
+
     def _on_settings_changed(self):
         """Called after settings are saved; refreshes dependent state."""
         # Update the model info label on the tracker page
@@ -643,14 +670,94 @@ class WorkLoggerApp:
         
         return result
  
+    def find_unfinished_session(self):
+        """
+        Check today's log for a session that was started but never ended.
+        Returns the session start datetime if an unfinished session is found,
+        or None if no unfinished session exists.
+        """
+        today = datetime.date.today()
+        tasks = self.data_repository.get_tasks_by_date(today)
+
+        last_start_time = None
+
+        for task in tasks:
+            title = task.get('Title', '')
+            if 'DAY STARTED' in title:
+                last_start_time = task.get('start_time_obj')
+            elif 'DAY ENDED' in title and last_start_time is not None:
+                # This start was properly ended
+                last_start_time = None
+
+        return last_start_time
+
+    def _update_continue_button(self):
+        """Enable or disable the 'Continue Day' button based on today's log."""
+        unfinished = self.find_unfinished_session()
+        if unfinished is not None:
+            self.btn_continue.config(state=tk.NORMAL)
+            self.status_label.config(
+                text=f"Unfinished session found from {unfinished.strftime('%H:%M')} — continue or start fresh"
+            )
+        else:
+            self.btn_continue.config(state=tk.DISABLED)
+
+    def continue_tracking(self):
+        """Resume tracking from an unfinished session started earlier today."""
+        session_start = self.find_unfinished_session()
+        if session_start is None:
+            messagebox.showinfo("No Unfinished Session",
+                                "No unfinished session found for today.")
+            return
+
+        now = datetime.datetime.now()
+        self.session_start_time = session_start  # Use the original session start
+        self.is_running = True
+        self.btn_start.config(state=tk.DISABLED)
+        self.btn_continue.config(state=tk.DISABLED)
+        self.btn_add_task.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.NORMAL)
+        self.next_checkin_time = now + datetime.timedelta(
+            minutes=self.settings_manager.get("checkin_interval_minutes"))
+
+        self.status_label.config(
+            text=f"Continuing session from {session_start.strftime('%H:%M')} — add your next task"
+        )
+
+        # Start countdown timer
+        self.update_countdown()
+
+        self.hour_start_time = now
+        self.hourly_tasks = []
+
+        # Schedule next check-in
+        interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
+        self.timer_id = self.root.after(interval_ms, self.hourly_checkin)
+
+        # Prompt for the next task
+        self.add_task()
+
     def start_tracking(self):
+        # Cancel any existing timer before starting a new one
+        if self.timer_id:
+            self.root.after_cancel(self.timer_id)
+            self.timer_id = None
+        if self.countdown_id:
+            self.root.after_cancel(self.countdown_id)
+            self.countdown_id = None
+
         # Log start of day
         start_time = datetime.datetime.now()
         self.session_start_time = start_time  # Track session start
         self.log_day_marker(start_time, "DAY STARTED")
+
+        # Archive done todos if trigger is "daily"
+        if self.settings_manager.get("archive_trigger") == "daily":
+            self._archive_done_todos()
         
         self.is_running = True
         self.btn_start.config(state=tk.DISABLED)
+        self.btn_continue.config(state=tk.DISABLED)
         self.btn_add_task.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.NORMAL)
         self.next_checkin_time = start_time + datetime.timedelta(
@@ -750,35 +857,45 @@ class WorkLoggerApp:
     def hourly_checkin(self):
         if not self.is_running: return
 
-        end_time = datetime.datetime.now()
-        
-        # Generate hourly summary in background
-        threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
+        # If a check-in prompt is already open, skip this one to avoid stacking
+        # up multiple dialogs (e.g. after returning from a long meeting).
+        # The in-progress check-in will restart the timer when it finishes.
+        if self._checkin_in_progress:
+            return
 
-        self.root.deiconify()
-        messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
-        
+        self._checkin_in_progress = True
+        try:
+            end_time = datetime.datetime.now()
+            
+            # Generate hourly summary in background
+            threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
+
+            self.root.deiconify()
+            messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
+            
         # Follow up on any tasks the user committed to at the last check-in
         self._follow_up_committed_tasks()
         
         # Surface recurring tasks for today and let the user commit to any
         self._show_checkin_recurring_tasks()
         
-        # Ask if the user wants to see their Todo list
-        if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
-            self.show_page("todo")
-        
-        self.next_checkin_time = end_time + datetime.timedelta(
-            minutes=self.settings_manager.get("checkin_interval_minutes"))
-        
-        # Reset for next hour
-        self.hour_start_time = end_time
-        self.hourly_tasks = []
-        
-        self.status_label.config(text=f"New hour started - Add a task")
-        
-        # Prompt for first task of new hour
-        self.add_task()
+            # Ask if the user wants to see their Todo list
+            if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
+                self.show_page("todo")
+            
+            self.next_checkin_time = end_time + datetime.timedelta(
+                minutes=self.settings_manager.get("checkin_interval_minutes"))
+            
+            # Reset for next hour
+            self.hour_start_time = end_time
+            self.hourly_tasks = []
+            
+            self.status_label.config(text=f"New hour started - Add a task")
+            
+            # Prompt for first task of new hour
+            self.add_task()
+        finally:
+            self._checkin_in_progress = False
         
         # Restart timer
         interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
@@ -998,6 +1115,13 @@ class WorkLoggerApp:
         if result['saved'] and result['summary']:
             # Save the edited summary to CSV
             self.save_day_summary(result['summary'], tickets, end_time)
+            # Archive done todos if trigger is "on_summary"
+            if self.settings_manager.get("archive_trigger") == "on_summary":
+                self._archive_done_todos()
+
+        # Archive done todos at day end if trigger is "daily"
+        if self.settings_manager.get("archive_trigger") == "daily":
+            self._archive_done_todos()
         
         # Log end of day marker
         self.log_day_marker(end_time, "DAY ENDED")
@@ -1046,14 +1170,21 @@ class WorkLoggerApp:
     def finalize_stop_ui(self):
         self.is_running = False
 
+        if self.timer_id:
+            self.root.after_cancel(self.timer_id)
+            self.timer_id = None
+
         if self.countdown_id:
             self.root.after_cancel(self.countdown_id)
+            self.countdown_id = None  
         
         self.countdown_label.config(text="")
         self.status_label.config(text="Stopped")
         self.btn_start.config(state=tk.NORMAL)
         self.btn_add_task.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.DISABLED)
+        # After a clean stop the session is ended, so no unfinished session
+        self.btn_continue.config(state=tk.DISABLED)
         messagebox.showinfo("Done", "Tracking stopped and saved.")
     
     def update_countdown(self):

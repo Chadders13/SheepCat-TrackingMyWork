@@ -188,6 +188,78 @@ class TestCSVDataRepository(unittest.TestCase):
         self.assertEqual(tasks[0]['Title'], 'Task 2')
         self.assertEqual(tasks[1]['Title'], 'Task 3')
 
+    def _make_marker(self, dt_str, title):
+        return {
+            'start_time': dt_str,
+            'end_time': dt_str,
+            'duration': 0,
+            'ticket': '',
+            'title': title,
+            'system_info': 'Test',
+            'ai_summary': '',
+            'resolved': ''
+        }
+
+    def _find_unfinished_session(self, tasks):
+        """Mirror of WorkLoggerApp.find_unfinished_session for unit-testing."""
+        last_start_time = None
+        for task in tasks:
+            title = task.get('Title', '')
+            if 'DAY STARTED' in title:
+                last_start_time = task.get('start_time_obj')
+            elif 'DAY ENDED' in title and last_start_time is not None:
+                last_start_time = None
+        return last_start_time
+
+    def test_find_unfinished_session_detects_missing_end(self):
+        """If DAY STARTED has no DAY ENDED, unfinished session is detected."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        dt_str = today.strftime('%Y-%m-%d') + ' 09:00:00'
+        self.repo.log_task(self._make_marker(dt_str, 'DAY STARTED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.date(), today)
+
+    def test_find_unfinished_session_none_when_ended(self):
+        """If DAY STARTED is followed by DAY ENDED, no unfinished session."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        dt_start = today.strftime('%Y-%m-%d') + ' 09:00:00'
+        dt_end = today.strftime('%Y-%m-%d') + ' 17:00:00'
+        self.repo.log_task(self._make_marker(dt_start, 'DAY STARTED'))
+        self.repo.log_task(self._make_marker(dt_end, 'DAY ENDED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNone(result)
+
+    def test_find_unfinished_session_none_when_no_entries(self):
+        """Empty log means no unfinished session."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNone(result)
+
+    def test_find_unfinished_session_last_session_takes_precedence(self):
+        """When multiple sessions exist, only the last unclosed one is returned."""
+        self.repo.initialize()
+        today = datetime.date.today()
+        base = today.strftime('%Y-%m-%d')
+        # First session: properly ended
+        self.repo.log_task(self._make_marker(base + ' 08:00:00', 'DAY STARTED'))
+        self.repo.log_task(self._make_marker(base + ' 12:00:00', 'DAY ENDED'))
+        # Second session: no end marker
+        self.repo.log_task(self._make_marker(base + ' 13:00:00', 'DAY STARTED'))
+
+        tasks = self.repo.get_tasks_by_date(today)
+        result = self._find_unfinished_session(tasks)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.hour, 13)
+
 
 class TestTodoRepository(unittest.TestCase):
     def setUp(self):
@@ -363,6 +435,53 @@ class TestTodoRepository(unittest.TestCase):
         self.assertTrue(result)
         todos = self.repo.get_all_todos()
         self.assertEqual(todos[0]['Status'], 'Done')
+
+
+    def test_archive_done_todos(self):
+        """archive_done_todos() should write done items to a file and remove them."""
+        self.repo.initialize()
+        self.repo.add_todo("Done task", "High", "completed work")
+        self.repo.add_todo("Still pending", "Low", "")
+        todos = self.repo.get_all_todos()
+        self.repo.update_todo_status(todos[0]['ID'], "Done")
+
+        fd, archive_path = tempfile.mkstemp(suffix='.md')
+        os.close(fd)
+        os.remove(archive_path)
+        try:
+            count = self.repo.archive_done_todos(archive_path)
+            self.assertEqual(count, 1)
+
+            # Archive file should exist and contain the done task
+            self.assertTrue(os.path.exists(archive_path))
+            with open(archive_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self.assertIn("Done task", content)
+            self.assertNotIn("Still pending", content)
+
+            # Active list should only contain the pending task
+            remaining = self.repo.get_all_todos()
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0]['Task'], 'Still pending')
+        finally:
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
+
+    def test_archive_done_todos_no_done_items(self):
+        """archive_done_todos() should return 0 when there are no done items."""
+        self.repo.initialize()
+        self.repo.add_todo("Pending task")
+
+        fd, archive_path = tempfile.mkstemp(suffix='.md')
+        os.close(fd)
+        os.remove(archive_path)
+        try:
+            count = self.repo.archive_done_todos(archive_path)
+            self.assertEqual(count, 0)
+            self.assertFalse(os.path.exists(archive_path))
+        finally:
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
 
 
 if __name__ == '__main__':
