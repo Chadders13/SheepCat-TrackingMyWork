@@ -60,7 +60,7 @@ class TodoPage(tk.Frame):
         self.todo_tree.column('task', width=300)
         self.todo_tree.column('priority', width=80)
         self.todo_tree.column('status', width=80)
-        self.todo_tree.column('repeat', width=100)
+        self.todo_tree.column('repeat', width=150)
         self.todo_tree.column('created', width=130)
 
         scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=self.todo_tree.yview)
@@ -125,7 +125,7 @@ class TodoPage(tk.Frame):
         for item in self.todo_tree.get_children():
             self.todo_tree.delete(item)
 
-        todos = self.todo_repository.get_all_todos()
+        todos = self.todo_repository.get_active_todos()
         for todo in todos:
             repeat_raw = todo.get('Repeat', 'none') or 'none'
             if repeat_raw == 'daily':

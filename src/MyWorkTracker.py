@@ -873,11 +873,11 @@ class WorkLoggerApp:
             self.root.deiconify()
             messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
             
-        # Follow up on any tasks the user committed to at the last check-in
-        self._follow_up_committed_tasks()
-        
-        # Surface recurring tasks for today and let the user commit to any
-        self._show_checkin_recurring_tasks()
+            # Follow up on any tasks the user committed to at the last check-in
+            self._follow_up_committed_tasks()
+            
+            # Surface recurring tasks for today and let the user commit to any
+            self._show_checkin_recurring_tasks()
         
             # Ask if the user wants to see their Todo list
             if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):

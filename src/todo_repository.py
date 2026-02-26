@@ -14,7 +14,7 @@ WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturd
 class TodoRepository:
     """CSV file-based repository for personal todo items."""
 
-    HEADERS = ["ID", "Task", "Priority", "Status", "Created", "Notes", "Repeat", "Days", "CommittedAt"]
+    HEADERS = ["ID", "Task", "Priority", "Status", "Created", "Notes", "Repeat", "Days", "CommittedAt", "LastCompleted"]
 
     def __init__(self, csv_file_path: str):
         """
@@ -26,10 +26,12 @@ class TodoRepository:
         self.csv_file_path = csv_file_path
 
     def initialize(self):
-        """Create the CSV file with headers if it doesn't exist."""
+        """Create the CSV file with headers if it doesn't exist, and migrate if needed."""
         if not os.path.exists(self.csv_file_path):
             with open(self.csv_file_path, mode='w', newline='', encoding='utf-8') as f:
                 csv.writer(f).writerow(self.HEADERS)
+        else:
+            self._migrate_if_needed()
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
@@ -59,6 +61,20 @@ class TodoRepository:
     def _pad_row(self, row: List[str]) -> List[str]:
         """Ensure a data row has an entry for every column (backward compat)."""
         return row + [""] * (len(self.HEADERS) - len(row))
+
+    def _migrate_if_needed(self):
+        """Add any columns that exist in HEADERS but are missing from the CSV."""
+        rows = self._read_rows()
+        if not rows:
+            return
+        header = rows[0]
+        missing = [h for h in self.HEADERS if h not in header]
+        if not missing:
+            return
+        header.extend(missing)
+        for i in range(1, len(rows)):
+            rows[i] = rows[i] + [''] * len(missing)
+        self._write_rows(rows)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -99,17 +115,34 @@ class TodoRepository:
                         line += f" — {notes}"
                     f.write(line + "\n")
 
-            # Remove done rows from the active list
+            # Repeated todos: reset to Pending + record completion date.
+            # Non-repeated todos: remove permanently.
+            _repeat_idx = self.HEADERS.index('Repeat')
+            _status_idx = self.HEADERS.index('Status')
+            _last_completed_idx = self.HEADERS.index('LastCompleted')
+            _repeating = {'daily', 'specific_days'}
+            today_str = datetime.date.today().isoformat()
             done_ids = {r[0] for r in done_rows}
-            kept = [rows[0]] + [r for r in rows[1:] if r and r[0] not in done_ids]
-            self._write_rows(kept)
+            new_rows = [rows[0]]
+            for r in rows[1:]:
+                if not r or r[0] not in done_ids:
+                    new_rows.append(r)
+                    continue
+                r = self._pad_row(r)
+                if r[_repeat_idx] in _repeating:
+                    r[_status_idx] = 'Pending'
+                    r[_last_completed_idx] = today_str
+                    new_rows.append(r)
+                # else: non-repeated — drop from list (permanently archived)
+            self._write_rows(new_rows)
 
             return len(done_rows)
         except Exception as e:
             print(f"Error archiving done todos: {e}")
             return 0
 
-    def add_todo(self, task: str, priority: str = "Medium", notes: str = "") -> bool:
+    def add_todo(self, task: str, priority: str = "Medium", notes: str = "",
+                 repeat: str = "none", days: str = "") -> bool:
         """
         Add a new todo item.
 
@@ -128,7 +161,7 @@ class TodoRepository:
             rows = self._read_rows()
             todo_id = self._next_id(rows)
             created = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_row = [todo_id, task, priority, "Pending", created, notes, repeat, days, ""]
+            new_row = [todo_id, task, priority, "Pending", created, notes, repeat, days, "", ""]
             with open(self.csv_file_path, mode='a', newline='', encoding='utf-8') as f:
                 csv.writer(f).writerow(new_row)
             return True
@@ -154,6 +187,28 @@ class TodoRepository:
         except Exception as e:
             print(f"Error reading todos: {e}")
         return todos
+
+    def get_active_todos(self) -> List[Dict]:
+        """
+        Return todos that should be visible in the active list today.
+
+        - Non-repeated todos are always shown.
+        - Repeated todos are hidden on the day they were last completed,
+          so they only reappear on their next scheduled occurrence.
+
+        Returns:
+            List of todo dictionaries to display.
+        """
+        today_str = datetime.date.today().isoformat()
+        active = []
+        for todo in self.get_all_todos():
+            repeat = todo.get('Repeat', 'none') or 'none'
+            if repeat in ('daily', 'specific_days'):
+                last_completed = todo.get('LastCompleted', '') or ''
+                if last_completed == today_str:
+                    continue  # already done today — hide until next occurrence
+            active.append(todo)
+        return active
 
     def update_todo_status(self, todo_id: str, status: str) -> bool:
         """
