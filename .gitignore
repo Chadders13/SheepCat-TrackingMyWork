@@ -214,3 +214,5 @@ src/work_log*.csv
 src/todo_list*.csv
 todo_list*.csv
 sheepcat_settings.*.json
+
+installer/Output/*
