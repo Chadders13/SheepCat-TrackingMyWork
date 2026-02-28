@@ -10,6 +10,7 @@ import os
 
 from settings_manager import SettingsManager, DEFAULT_SETTINGS, DATE_FORMAT_MAP, PROVIDER_DEFAULT_URLS
 import theme
+from theme import THEME_NAMES
 
 
 # AI providers available in the dropdown
@@ -303,6 +304,33 @@ class SettingsPage(tk.Frame):
         )
         self.archive_dir_browse_btn.pack(side='left', padx=5)
 
+        # ---- Appearance Settings ----
+        tk.Label(
+            form, text="Appearance",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.PRIMARY,
+        ).grid(row=22, column=0, columnspan=3, sticky='w', padx=15, pady=(15, 5))
+
+        tk.Label(
+            form, text="UI Theme:",
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).grid(row=23, column=0, sticky='w', padx=15, pady=5)
+        self.theme_var = tk.StringVar()
+        self.theme_combo = ttk.Combobox(
+            form, textvariable=self.theme_var, values=THEME_NAMES, width=20, state='readonly')
+        self.theme_combo.grid(row=23, column=1, columnspan=2, sticky='w', padx=5, pady=5)
+
+        tk.Label(
+            form, text="Classic – original dark slate/indigo\nGlass Purple – soft modern purple palette",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, justify='left',
+        ).grid(row=24, column=0, columnspan=3, sticky='w', padx=15, pady=(0, 5))
+
+        self.theme_note_label = tk.Label(
+            form, text="",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.ACCENT, justify='left',
+        )
+        self.theme_note_label.grid(row=25, column=0, columnspan=3, sticky='w', padx=15, pady=(0, 5))
+        self.theme_combo.bind('<<ComboboxSelected>>', self._on_theme_changed)
+
         # ---- Buttons ----
         button_frame = tk.Frame(self, bg=theme.WINDOW_BG)
         button_frame.pack(pady=15)
@@ -327,6 +355,12 @@ class SettingsPage(tk.Frame):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _on_theme_changed(self, _event=None):
+        """Show a note when the user picks a different theme."""
+        self.theme_note_label.config(
+            text="⚠ Restart the application to apply the new theme."
+        )
 
     def _on_provider_changed(self, _event=None):
         """Auto-fill the default API URL when the provider selection changes."""
@@ -462,6 +496,10 @@ class SettingsPage(tk.Frame):
         self.archive_dir_var.set(sm.get("archive_file_directory", "."))
         self._on_archive_toggled()
 
+        # Appearance
+        self.theme_var.set(sm.get("ui_theme", "Classic"))
+        self.theme_note_label.config(text="")
+
         self._update_preview()
         self._update_summary_preview()
 
@@ -504,6 +542,7 @@ class SettingsPage(tk.Frame):
         trigger_label = self.archive_trigger_var.get()
         sm.set("archive_trigger", "on_summary" if "summary" in trigger_label.lower() else "daily")
         sm.set("archive_file_directory", self.archive_dir_var.get().strip() or ".")
+        sm.set("ui_theme", self.theme_var.get())
 
         if sm.save():
             self.status_label.config(text="Settings saved successfully!", fg=theme.GREEN)

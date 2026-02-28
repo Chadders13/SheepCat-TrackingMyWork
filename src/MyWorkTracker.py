@@ -25,13 +25,15 @@ class WorkLoggerApp:
         self.root = root
         self.root.title("SheepCat — Tracking My Work")
         self.root.geometry("800x600")
+
+        # Load settings first so we can apply the chosen UI theme
+        self.settings_manager = SettingsManager()
+        theme.apply_theme(self.settings_manager.get("ui_theme", "Classic"))
+
         self.root.configure(bg=theme.WINDOW_BG)
 
         # Apply SheepCat brand theme to all ttk widgets
         theme.setup_ttk_styles(root)
-        
-        # Load settings
-        self.settings_manager = SettingsManager()
         
         # Initialize data repository using the configured log file path
         self.data_repository = CSVDataRepository(self.settings_manager.get_log_file_path())

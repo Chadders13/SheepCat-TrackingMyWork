@@ -3,28 +3,59 @@ SheepCat brand theme constants and ttk style configuration.
 
 Colour tokens and typography match the SheepCat style guide so the desktop
 application shares the same visual identity as the website.
+
+Two built-in themes are available:
+  "Classic"      – original dark slate/indigo palette
+  "Glass Purple" – soft modern purple with rounded, soothing tones
 """
 from tkinter import ttk
 
-# ── Colours ───────────────────────────────────────────────────────────────────
-# Background gradient stops (used as solid equivalents in a desktop context)
-WINDOW_BG   = "#0f172a"   # Slate Dark – root window / outer frames
-SURFACE_BG  = "#1e1b4b"   # Deep Indigo Night – inner frames / cards
-INPUT_BG    = "#252250"   # Slightly lighter – entry / text widgets
+# ── Built-in theme palettes ───────────────────────────────────────────────────
 
-# Brand & UI colours
-PRIMARY     = "#818cf8"   # Indigo primary – buttons, accents, step numbers
-PRIMARY_D   = "#6366f1"   # Deeper indigo – hover / treeview headings
-ACCENT      = "#fb923c"   # Warm orange – use sparingly
-GREEN       = "#4ade80"   # Success states
-RED         = "#f87171"   # Danger / stop
+THEMES = {
+    "Classic": {
+        "WINDOW_BG":  "#0f172a",
+        "SURFACE_BG": "#1e1b4b",
+        "INPUT_BG":   "#252250",
+        "PRIMARY":    "#818cf8",
+        "PRIMARY_D":  "#6366f1",
+        "ACCENT":     "#fb923c",
+        "GREEN":      "#4ade80",
+        "RED":        "#f87171",
+        "TEXT":       "#f1f5f9",
+        "MUTED":      "#94a3b8",
+        "BORDER":     "#2e2b5e",
+    },
+    "Glass Purple": {
+        # Soft deep-purple background with a gentle, soothing feel
+        "WINDOW_BG":  "#1a0e30",   # Rich midnight purple
+        "SURFACE_BG": "#2d1a52",   # Frosted card surface
+        "INPUT_BG":   "#3b2270",   # Slightly lighter input fields
+        "PRIMARY":    "#c084fc",   # Soft lavender – buttons & accents
+        "PRIMARY_D":  "#a855f7",   # Medium purple – hover / headings
+        "ACCENT":     "#f0abfc",   # Pink-lilac – use sparingly
+        "GREEN":      "#86efac",   # Mint green – success
+        "RED":        "#fca5a5",   # Soft coral – danger
+        "TEXT":       "#faf5ff",   # Warm near-white – body text
+        "MUTED":      "#d8b4fe",   # Muted lavender – secondary text
+        "BORDER":     "#5b21b6",   # Violet border
+    },
+}
 
-# Text colours
-TEXT        = "#f1f5f9"   # Primary body copy and headings  (≈ 15:1 contrast AAA)
-MUTED       = "#94a3b8"   # Secondary / descriptive copy    (≈ 5:1  contrast AA)
+THEME_NAMES = list(THEMES.keys())
 
-# Surface border (visible divider on the dark background)
-BORDER      = "#2e2b5e"
+# ── Active colour tokens (module-level – updated by apply_theme) ──────────────
+WINDOW_BG   = THEMES["Classic"]["WINDOW_BG"]
+SURFACE_BG  = THEMES["Classic"]["SURFACE_BG"]
+INPUT_BG    = THEMES["Classic"]["INPUT_BG"]
+PRIMARY     = THEMES["Classic"]["PRIMARY"]
+PRIMARY_D   = THEMES["Classic"]["PRIMARY_D"]
+ACCENT      = THEMES["Classic"]["ACCENT"]
+GREEN       = THEMES["Classic"]["GREEN"]
+RED         = THEMES["Classic"]["RED"]
+TEXT        = THEMES["Classic"]["TEXT"]
+MUTED       = THEMES["Classic"]["MUTED"]
+BORDER      = THEMES["Classic"]["BORDER"]
 
 # ── Typography ────────────────────────────────────────────────────────────────
 _FONT = "Segoe UI"
@@ -36,6 +67,34 @@ FONT_H2         = (_FONT, 14, "bold")
 FONT_H3         = (_FONT, 12, "bold")
 FONT_SMALL      = (_FONT, 9)
 FONT_MONO       = ("Consolas", 10)
+
+
+def apply_theme(name: str) -> None:
+    """
+    Switch the active colour tokens to the named theme.
+
+    Must be called *before* any widgets are created (or before
+    ``setup_ttk_styles`` is called) so that every widget picks up the
+    correct colours when it is first built.
+
+    Args:
+        name: One of the keys in ``THEMES`` (e.g. "Classic", "Glass Purple").
+              Falls back to "Classic" if the name is not recognised.
+    """
+    palette = THEMES.get(name, THEMES["Classic"])
+    global WINDOW_BG, SURFACE_BG, INPUT_BG, PRIMARY, PRIMARY_D
+    global ACCENT, GREEN, RED, TEXT, MUTED, BORDER
+    WINDOW_BG  = palette["WINDOW_BG"]
+    SURFACE_BG = palette["SURFACE_BG"]
+    INPUT_BG   = palette["INPUT_BG"]
+    PRIMARY    = palette["PRIMARY"]
+    PRIMARY_D  = palette["PRIMARY_D"]
+    ACCENT     = palette["ACCENT"]
+    GREEN      = palette["GREEN"]
+    RED        = palette["RED"]
+    TEXT       = palette["TEXT"]
+    MUTED      = palette["MUTED"]
+    BORDER     = palette["BORDER"]
 
 
 # ── ttk style setup ───────────────────────────────────────────────────────────
