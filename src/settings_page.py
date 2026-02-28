@@ -162,9 +162,9 @@ class SettingsPage(tk.Frame):
             dir_frame, textvariable=self.log_dir_var, width=40,
             bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
         ).pack(side='left')
-        tk.Button(
+        theme.RoundedButton(
             dir_frame, text="Browse...", command=self._browse_directory,
-            bg=theme.SURFACE_BG, fg=theme.TEXT, relief='flat', cursor='hand2',
+            bg=theme.SURFACE_BG, fg=theme.TEXT, cursor='hand2',
         ).pack(side='left', padx=5)
 
         tk.Label(
@@ -229,9 +229,9 @@ class SettingsPage(tk.Frame):
             bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
         )
         self.summary_dir_entry.pack(side='left')
-        self.summary_dir_browse_btn = tk.Button(
+        self.summary_dir_browse_btn = theme.RoundedButton(
             summary_dir_frame, text="Browse...", command=self._browse_summary_directory,
-            bg=theme.SURFACE_BG, fg=theme.TEXT, relief='flat', cursor='hand2',
+            bg=theme.SURFACE_BG, fg=theme.TEXT, cursor='hand2',
         )
         self.summary_dir_browse_btn.pack(side='left', padx=5)
 
@@ -298,9 +298,9 @@ class SettingsPage(tk.Frame):
             bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
         )
         self.archive_dir_entry.pack(side='left')
-        self.archive_dir_browse_btn = tk.Button(
+        self.archive_dir_browse_btn = theme.RoundedButton(
             archive_dir_frame, text="Browse...", command=self._browse_archive_directory,
-            bg=theme.SURFACE_BG, fg=theme.TEXT, relief='flat', cursor='hand2',
+            bg=theme.SURFACE_BG, fg=theme.TEXT, cursor='hand2',
         )
         self.archive_dir_browse_btn.pack(side='left', padx=5)
 
@@ -335,15 +335,15 @@ class SettingsPage(tk.Frame):
         button_frame = tk.Frame(self, bg=theme.WINDOW_BG)
         button_frame.pack(pady=15)
 
-        tk.Button(
+        theme.RoundedButton(
             button_frame, text="Save Settings", command=self._save_settings,
             bg=theme.GREEN, fg=theme.WINDOW_BG,
-            font=theme.FONT_BODY, width=15, relief='flat', cursor='hand2',
+            font=theme.FONT_BODY, width=15, cursor='hand2',
         ).pack(side='left', padx=5)
-        tk.Button(
+        theme.RoundedButton(
             button_frame, text="Reset to Defaults", command=self._reset_defaults,
             bg=theme.SURFACE_BG, fg=theme.TEXT,
-            font=theme.FONT_BODY, width=15, relief='flat', cursor='hand2',
+            font=theme.FONT_BODY, width=15, cursor='hand2',
         ).pack(side='left', padx=5)
 
         self.status_label = tk.Label(
