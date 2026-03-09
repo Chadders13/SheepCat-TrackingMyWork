@@ -923,16 +923,17 @@ class WorkLoggerApp:
             threading.Thread(target=self.save_hourly_summary, args=(end_time,)).start()
 
             self.root.deiconify()
-            messagebox.showinfo("Hourly Check-in", f"Hour complete! {len(self.hourly_tasks)} task(s) logged. Add your next task.")
-            
+
+            # Combined check-in dialog with optional Todo list checkbox
+            show_todo = self._show_checkin_dialog(len(self.hourly_tasks))
+
             # Follow up on any tasks the user committed to at the last check-in
             self._follow_up_committed_tasks()
-            
+
             # Surface recurring tasks for today and let the user commit to any
             self._show_checkin_recurring_tasks()
-        
-            # Ask if the user wants to see their Todo list
-            if messagebox.askyesno("Todo List", "Would you like to see your Todo list?"):
+
+            if show_todo:
                 self.show_page("todo")
             
             self.next_checkin_time = end_time + datetime.timedelta(
@@ -952,6 +953,72 @@ class WorkLoggerApp:
         # Restart timer
         interval_ms = self.settings_manager.get("checkin_interval_minutes") * 60 * 1000
         self.timer_id = self.root.after(interval_ms, self.hourly_checkin)
+
+    def _show_checkin_dialog(self, task_count: int) -> bool:
+        """Show the combined hourly check-in dialog.
+
+        Displays a notification that the hour is complete and includes a
+        checkbox asking whether the user would like to open their Todo list.
+
+        Returns ``True`` if the user checked the Todo list option.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Hourly Check-in 🐾")
+        dialog.geometry("420x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+        dialog.resizable(False, False)
+
+        tk.Label(
+            dialog,
+            text="It's time to check in!",
+            font=theme.FONT_H3,
+            bg=theme.WINDOW_BG,
+            fg=theme.TEXT,
+        ).pack(anchor='w', padx=20, pady=(18, 4))
+
+        tk.Label(
+            dialog,
+            text=f"Hour complete! {task_count} task(s) logged. Add your next task.",
+            font=theme.FONT_BODY,
+            bg=theme.WINDOW_BG,
+            fg=theme.MUTED,
+            wraplength=380,
+            justify='left',
+        ).pack(anchor='w', padx=20, pady=(0, 12))
+
+        show_todo_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            dialog,
+            text="Would you like to see your Todo list?",
+            variable=show_todo_var,
+            font=theme.FONT_BODY,
+            bg=theme.WINDOW_BG,
+            fg=theme.TEXT,
+            activebackground=theme.WINDOW_BG,
+            activeforeground=theme.TEXT,
+            selectcolor=theme.INPUT_BG,
+        ).pack(anchor='w', padx=20, pady=(0, 16))
+
+        btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        btn_frame.pack(fill='x', padx=20, pady=(0, 16))
+
+        tk.Button(
+            btn_frame,
+            text="Continue",
+            command=dialog.destroy,
+            bg=theme.PRIMARY,
+            fg=theme.TEXT,
+            font=theme.FONT_BODY_BOLD,
+            relief='flat',
+            padx=16,
+            pady=6,
+            cursor='hand2',
+        ).pack(side='right')
+
+        self.root.wait_window(dialog)
+        return show_todo_var.get()
 
     def _show_todays_recurring_tasks(self):
         """Gently surface recurring tasks that are scheduled for today at day start."""
