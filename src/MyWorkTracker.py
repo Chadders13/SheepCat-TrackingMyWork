@@ -457,6 +457,10 @@ class WorkLoggerApp:
             "Write a brief 2-3 sentence summary of the work accomplished."
         )
 
+        extra_context = self.settings_manager.get("hourly_summary_extra_context", "").strip()
+        if extra_context:
+            prompt += f"\n\nAdditional context: {extra_context}"
+
         payload = {
             "model": self.settings_manager.get("ai_model"),
             "prompt": prompt,
@@ -576,6 +580,9 @@ class WorkLoggerApp:
         
         # Check if we need to chunk
         chunks = self.chunk_text(content, max_chars=self.settings_manager.get("max_chunk_size"))
+
+        extra_context = self.settings_manager.get("daily_summary_extra_context", "").strip()
+        extra_context_line = f"\n\nAdditional context: {extra_context}" if extra_context else ""
         
         if len(chunks) == 1:
             # Single chunk - process normally
@@ -588,7 +595,7 @@ class WorkLoggerApp:
                 "2. Lists the tickets/references addressed\n"
                 "3. Provides a cohesive overview of the day's work\n"
                 "Format in Markdown with clear sections."
-            )
+            ) + extra_context_line
             
             return self._call_llm_for_summary(prompt)
         else:
@@ -615,7 +622,7 @@ class WorkLoggerApp:
                 "2. Lists the tickets/references addressed\n"
                 "3. Provides a cohesive overview of the day's work\n"
                 "Format in Markdown with clear sections."
-            )
+            ) + extra_context_line
             
             return self._call_llm_for_summary(final_prompt)
     

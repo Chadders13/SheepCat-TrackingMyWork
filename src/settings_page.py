@@ -331,6 +331,36 @@ class SettingsPage(tk.Frame):
         self.theme_note_label.grid(row=25, column=0, columnspan=3, sticky='w', padx=15, pady=(0, 5))
         self.theme_combo.bind('<<ComboboxSelected>>', self._on_theme_changed)
 
+        # ---- AI Summary Prompt Context ----
+        tk.Label(
+            form, text="AI Summary Prompt Context",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.PRIMARY,
+        ).grid(row=26, column=0, columnspan=3, sticky='w', padx=15, pady=(15, 5))
+
+        tk.Label(
+            form,
+            text="Extra instructions added to the interval (hourly) summary prompt:",
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).grid(row=27, column=0, columnspan=3, sticky='w', padx=15, pady=(5, 0))
+        self.hourly_context_text = tk.Text(
+            form, height=4, width=60, wrap='word',
+            bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
+            font=theme.FONT_BODY,
+        )
+        self.hourly_context_text.grid(row=28, column=0, columnspan=3, sticky='w', padx=15, pady=(0, 5))
+
+        tk.Label(
+            form,
+            text="Extra instructions added to the end-of-day summary prompt:",
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).grid(row=29, column=0, columnspan=3, sticky='w', padx=15, pady=(5, 0))
+        self.daily_context_text = tk.Text(
+            form, height=4, width=60, wrap='word',
+            bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
+            font=theme.FONT_BODY,
+        )
+        self.daily_context_text.grid(row=30, column=0, columnspan=3, sticky='w', padx=15, pady=(0, 10))
+
         # ---- Buttons ----
         button_frame = tk.Frame(self, bg=theme.WINDOW_BG)
         button_frame.pack(pady=15)
@@ -500,6 +530,12 @@ class SettingsPage(tk.Frame):
         self.theme_var.set(sm.get("ui_theme", "Classic"))
         self.theme_note_label.config(text="")
 
+        # AI Summary Prompt Context
+        self.hourly_context_text.delete("1.0", tk.END)
+        self.hourly_context_text.insert("1.0", sm.get("hourly_summary_extra_context", ""))
+        self.daily_context_text.delete("1.0", tk.END)
+        self.daily_context_text.insert("1.0", sm.get("daily_summary_extra_context", ""))
+
         self._update_preview()
         self._update_summary_preview()
 
@@ -543,6 +579,10 @@ class SettingsPage(tk.Frame):
         sm.set("archive_trigger", "on_summary" if "summary" in trigger_label.lower() else "daily")
         sm.set("archive_file_directory", self.archive_dir_var.get().strip() or ".")
         sm.set("ui_theme", self.theme_var.get())
+        sm.set("hourly_summary_extra_context",
+               self.hourly_context_text.get("1.0", tk.END).strip())
+        sm.set("daily_summary_extra_context",
+               self.daily_context_text.get("1.0", tk.END).strip())
 
         if sm.save():
             self.status_label.config(text="Settings saved successfully!", fg=theme.GREEN)
