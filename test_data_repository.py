@@ -260,6 +260,123 @@ class TestCSVDataRepository(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.hour, 13)
 
+    # ── search_tasks tests ────────────────────────────────────────────────────
+
+    def _log_sample_tasks(self):
+        """Helper: log a set of varied tasks for search tests."""
+        self.repo.initialize()
+        tasks = [
+            {
+                'start_time': '2024-03-01 09:00:00',
+                'end_time': '2024-03-01 09:30:00',
+                'duration': 30,
+                'ticket': 'PROJ-1',
+                'title': 'Standup meeting',
+                'system_info': '',
+                'ai_summary': 'Team aligned on sprint goals.',
+                'resolved': 'Yes',
+            },
+            {
+                'start_time': '2024-03-01 10:00:00',
+                'end_time': '2024-03-01 11:00:00',
+                'duration': 60,
+                'ticket': 'PROJ-2',
+                'title': 'Bug fix in payment module',
+                'system_info': '',
+                'ai_summary': 'Resolved null-pointer in checkout flow.',
+                'resolved': 'Yes',
+            },
+            {
+                'start_time': '2024-03-02 14:00:00',
+                'end_time': '2024-03-02 15:00:00',
+                'duration': 60,
+                'ticket': 'PROJ-3',
+                'title': 'Code review for payment feature',
+                'system_info': '',
+                'ai_summary': 'Reviewed PR, left comments on error handling.',
+                'resolved': 'No',
+            },
+            {
+                'start_time': '2024-03-02 16:00:00',
+                'end_time': '2024-03-02 16:30:00',
+                'duration': 30,
+                'ticket': '',
+                'title': 'Daily standup notes',
+                'system_info': '',
+                'ai_summary': '',
+                'resolved': 'No',
+            },
+        ]
+        for t in tasks:
+            self.repo.log_task(t)
+
+    def test_search_tasks_by_title_keyword(self):
+        """search_tasks finds entries whose title contains the keyword."""
+        self._log_sample_tasks()
+        results = self.repo.search_tasks('standup')
+        titles = [r['Title'] for r in results]
+        self.assertEqual(len(results), 2)
+        self.assertIn('Standup meeting', titles)
+        self.assertIn('Daily standup notes', titles)
+
+    def test_search_tasks_by_summary_keyword(self):
+        """search_tasks matches entries whose AI summary contains the keyword."""
+        self._log_sample_tasks()
+        results = self.repo.search_tasks('payment')
+        # 'Bug fix in payment module' (title match) and
+        # 'Code review for payment feature' (title match) should be found.
+        # 'Resolved null-pointer in checkout flow.' (summary of PROJ-2) also
+        # contains no 'payment' but title does — let's be precise.
+        titles = [r['Title'] for r in results]
+        self.assertIn('Bug fix in payment module', titles)
+        self.assertIn('Code review for payment feature', titles)
+
+    def test_search_tasks_case_insensitive(self):
+        """Keyword matching is case-insensitive."""
+        self._log_sample_tasks()
+        results_lower = self.repo.search_tasks('standup')
+        results_upper = self.repo.search_tasks('STANDUP')
+        self.assertEqual(len(results_lower), len(results_upper))
+
+    def test_search_tasks_date_range_filter(self):
+        """search_tasks respects start_date / end_date filters."""
+        self._log_sample_tasks()
+        start = datetime.date(2024, 3, 2)
+        end = datetime.date(2024, 3, 2)
+        results = self.repo.search_tasks('standup', start_date=start, end_date=end)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['Title'], 'Daily standup notes')
+
+    def test_search_tasks_no_match_returns_empty(self):
+        """search_tasks returns an empty list when nothing matches."""
+        self._log_sample_tasks()
+        results = self.repo.search_tasks('zzznomatch')
+        self.assertEqual(results, [])
+
+    def test_search_tasks_summary_only_match(self):
+        """Entries are returned when only the AI summary matches, not the title."""
+        self._log_sample_tasks()
+        # 'null-pointer' only appears in the AI summary of PROJ-2
+        results = self.repo.search_tasks('null-pointer')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['Ticket'], 'PROJ-2')
+
+    def test_search_tasks_start_date_only(self):
+        """Providing only start_date returns tasks from that date onwards."""
+        self._log_sample_tasks()
+        start = datetime.date(2024, 3, 2)
+        results = self.repo.search_tasks('standup', start_date=start)
+        self.assertEqual(len(results), 1)
+        self.assertIn('2024-03-02', results[0]['Start Time'])
+
+    def test_search_tasks_end_date_only(self):
+        """Providing only end_date returns tasks up to and including that date."""
+        self._log_sample_tasks()
+        end = datetime.date(2024, 3, 1)
+        results = self.repo.search_tasks('standup', end_date=end)
+        self.assertEqual(len(results), 1)
+        self.assertIn('2024-03-01', results[0]['Start Time'])
+
 
 class TestTodoRepository(unittest.TestCase):
     def setUp(self):

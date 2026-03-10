@@ -172,6 +172,54 @@ class CSVDataRepository(DataRepository):
             print(f"Error updating task resolved status: {e}")
             return False
     
+    def search_tasks(self, keyword: str, start_date: Optional[datetime.date] = None,
+                     end_date: Optional[datetime.date] = None) -> List[Dict]:
+        """
+        Search tasks by keyword in title or AI summary, optionally within a date range.
+
+        Args:
+            keyword: Case-insensitive substring to match against Title and AI Summary.
+            start_date: If provided, only include tasks on or after this date.
+            end_date: If provided, only include tasks on or before this date.
+
+        Returns:
+            List of matching task dictionaries, oldest first.
+        """
+        results = []
+        needle = keyword.lower()
+
+        try:
+            with open(self.csv_file_path, mode='r', encoding='utf-8') as file:
+                reader = csv.DictReader(file)
+                for idx, row in enumerate(reader):
+                    start_time_str = row.get('Start Time', '')
+                    if not start_time_str:
+                        continue
+
+                    try:
+                        row_dt = datetime.datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        continue
+
+                    row_date = row_dt.date()
+                    if start_date and row_date < start_date:
+                        continue
+                    if end_date and row_date > end_date:
+                        continue
+
+                    title = row.get('Title', '')
+                    summary = row.get('AI Summary', '')
+                    if needle in title.lower() or needle in summary.lower():
+                        row['task_id'] = str(idx + 1)
+                        row['start_time_obj'] = row_dt
+                        results.append(row)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print(f"Error searching tasks in CSV: {e}")
+
+        return results
+
     def get_all_tasks(self) -> List[Dict]:
         """
         Get all tasks in the CSV file.
