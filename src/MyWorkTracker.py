@@ -9,6 +9,7 @@ import json
 import threading
 from csv_data_repository import CSVDataRepository
 from review_log_page import ReviewLogPage
+from search_notes_page import SearchNotesPage
 from settings_manager import SettingsManager
 from settings_page import SettingsPage
 from todo_repository import TodoRepository
@@ -35,8 +36,9 @@ class WorkLoggerApp:
         # Apply SheepCat brand theme to all ttk widgets
         theme.setup_ttk_styles(root)
         
-        # Initialize data repository using the configured log file path
-        self.data_repository = CSVDataRepository(self.settings_manager.get_log_file_path())
+        # Initialize data repository using the settings manager so it can
+        # resolve file paths for any date, not just today.
+        self.data_repository = CSVDataRepository(self.settings_manager)
         self.data_repository.initialize()
         
         # Initialize todo repository
@@ -64,6 +66,7 @@ class WorkLoggerApp:
         self.pages = {}
         self._create_tracker_page()
         self._create_review_page()
+        self._create_search_page()
         self._create_settings_page()
         self._create_todo_page()
         
@@ -95,6 +98,7 @@ class WorkLoggerApp:
         menubar.add_cascade(label="Pages", menu=pages_menu)
         pages_menu.add_command(label="Task Tracker", command=lambda: self.show_page("tracker"))
         pages_menu.add_command(label="Review Work Log", command=lambda: self.show_page("review"))
+        pages_menu.add_command(label="Search Notes", command=lambda: self.show_page("search"))
         pages_menu.add_command(label="Todo List", command=lambda: self.show_page("todo"))
         pages_menu.add_command(label="Settings", command=lambda: self.show_page("settings"))
         pages_menu.add_separator()
@@ -222,6 +226,12 @@ class WorkLoggerApp:
         page = ReviewLogPage(self.container, self.data_repository)
         self.pages["review"] = page
     
+    def _create_search_page(self):
+        """Create the search notes page"""
+        page = SearchNotesPage(self.container, self.data_repository,
+                               settings_manager=self.settings_manager)
+        self.pages["search"] = page
+    
     def _create_settings_page(self):
         """Create the settings page"""
         page = SettingsPage(self.container, self.settings_manager,
@@ -252,13 +262,16 @@ class WorkLoggerApp:
         # Update the model info label on the tracker page
         self.info_label.config(text=f"Model: {self.settings_manager.get('ai_model')}")
         
-        # Reinitialise the data repository with the (possibly new) log file path
-        new_path = self.settings_manager.get_log_file_path()
-        self.data_repository = CSVDataRepository(new_path)
+        # Reinitialise the data repository with the (possibly new) settings
+        self.data_repository = CSVDataRepository(self.settings_manager)
         self.data_repository.initialize()
         
         # Update the review page to use the new repository
         self.pages["review"].data_repository = self.data_repository
+        
+        # Update the search notes page to use the new repository
+        self.pages["search"].data_repository = self.data_repository
+        self.pages["search"].settings_manager = self.settings_manager
         
         # Reinitialise the todo repository with the (possibly new) directory
         new_todo_path = self.settings_manager.get_todo_file_path()
