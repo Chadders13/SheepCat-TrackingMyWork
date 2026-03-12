@@ -4,7 +4,8 @@ Search Notes Page - Search past work log entries and export results.
 Allows users to:
   - Search notes by keyword across a date range (yesterday, last 7 days, custom)
   - View every matching entry with its timestamp, title, and AI summary
-  - Export results as:
+  - Ask the LLM to analyse the matched entries (themes, patterns, progress summary)
+  - Export results (with optional AI analysis) as:
       • Markdown  — formal headed report suitable for a manager/boss review
       • CSV       — spreadsheet-friendly data for checks and analysis
       • Highlights — a plain-text digest of the most interesting / AI-summarised entries
@@ -12,14 +13,22 @@ Allows users to:
 import csv
 import datetime
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
+import requests
 import theme
 from data_repository import DataRepository
 
 _MARKER_TITLES = ("DAY STARTED", "DAY ENDED", "HOURLY SUMMARY", "END OF DAY SUMMARY")
+
+_DEFAULT_AI_PROMPT = (
+    "Please analyse these work log entries. "
+    "Identify any recurring themes or patterns, highlight what progress was made, "
+    "and give a concise summary of what this work meant overall."
+)
 
 
 def _is_marker(title: str) -> bool:
@@ -29,17 +38,20 @@ def _is_marker(title: str) -> bool:
 class SearchNotesPage(tk.Frame):
     """Page for searching past work log notes and exporting results."""
 
-    def __init__(self, parent, data_repository: DataRepository):
+    def __init__(self, parent, data_repository: DataRepository, settings_manager=None):
         """
         Initialise the Search Notes page.
 
         Args:
             parent: Parent tkinter widget.
             data_repository: Data repository instance.
+            settings_manager: SettingsManager instance for LLM configuration.
         """
         super().__init__(parent, bg=theme.WINDOW_BG)
         self.data_repository = data_repository
+        self.settings_manager = settings_manager
         self._results: list = []
+        self._ai_analysis: str = ""
         self._create_widgets()
 
     # ── Widget construction ───────────────────────────────────────────────────
@@ -143,7 +155,7 @@ class SearchNotesPage(tk.Frame):
 
         columns = ('date', 'time', 'ticket', 'title', 'summary')
         self.result_tree = ttk.Treeview(
-            list_frame, columns=columns, show='headings', height=12,
+            list_frame, columns=columns, show='headings', height=8,
         )
         self.result_tree.heading('date', text='Date')
         self.result_tree.heading('time', text='Time')
@@ -165,6 +177,49 @@ class SearchNotesPage(tk.Frame):
 
         # Double-click shows full detail popup
         self.result_tree.bind('<Double-1>', self._show_detail)
+
+        # ── AI Analysis section ───────────────────────────────────────────────
+        ai_frame = tk.Frame(self, bg=theme.WINDOW_BG)
+        ai_frame.pack(fill='x', padx=10, pady=(4, 2))
+
+        ai_top = tk.Frame(ai_frame, bg=theme.WINDOW_BG)
+        ai_top.pack(fill='x')
+
+        tk.Label(
+            ai_top, text="Ask AI about these results:",
+            font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(side='left', padx=(0, 8))
+
+        self._analyse_btn = theme.RoundedButton(
+            ai_top, text="🤖 Analyse with AI",
+            command=self._run_ai_analysis,
+            bg=theme.GREEN, fg=theme.WINDOW_BG,
+            font=theme.FONT_BODY_BOLD, width=18, cursor='hand2',
+        )
+        self._analyse_btn.pack(side='left', padx=(0, 6))
+
+        self._ai_status_label = tk.Label(
+            ai_top, text="",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        )
+        self._ai_status_label.pack(side='left')
+
+        self.ai_prompt_var = tk.StringVar(value=_DEFAULT_AI_PROMPT)
+        self.ai_prompt_entry = tk.Entry(
+            ai_frame, textvariable=self.ai_prompt_var,
+            bg=theme.INPUT_BG, fg=theme.TEXT,
+            insertbackground=theme.TEXT, relief='flat',
+            font=theme.FONT_BODY,
+        )
+        self.ai_prompt_entry.pack(fill='x', pady=(4, 2))
+
+        self.ai_response_box = tk.Text(
+            ai_frame, height=5, wrap=tk.WORD,
+            font=theme.FONT_BODY, bg=theme.INPUT_BG, fg=theme.TEXT,
+            insertbackground=theme.TEXT, relief='flat',
+            padx=6, pady=4, state='disabled',
+        )
+        self.ai_response_box.pack(fill='x', pady=(2, 4))
 
         # ── Export buttons ────────────────────────────────────────────────────
         export_frame = tk.Frame(self, bg=theme.WINDOW_BG)
@@ -259,6 +314,9 @@ class SearchNotesPage(tk.Frame):
         for item in self.result_tree.get_children():
             self.result_tree.delete(item)
         self._results = []
+        self._ai_analysis = ""
+        self._set_ai_response("")
+        self._ai_status_label.config(text="")
 
         raw = self.data_repository.search_tasks(keyword, start_date, end_date)
         self._results = [r for r in raw if not _is_marker(r.get('Title', ''))]
@@ -302,6 +360,113 @@ class SearchNotesPage(tk.Frame):
         if end_date:
             return f" up to {end_date}"
         return " (all time)"
+
+    # ── AI Analysis ───────────────────────────────────────────────────────────
+
+    def _run_ai_analysis(self):
+        """Send the search results to the LLM and display the analysis."""
+        if not self._results:
+            messagebox.showinfo(
+                "No Results",
+                "Please run a search first so there are entries for the AI to analyse.",
+            )
+            return
+
+        if not self.settings_manager:
+            messagebox.showwarning(
+                "AI Not Available",
+                "Settings are not connected — cannot reach the AI model.",
+            )
+            return
+
+        user_prompt = self.ai_prompt_var.get().strip()
+        if not user_prompt:
+            user_prompt = _DEFAULT_AI_PROMPT
+
+        # Build context from search results
+        keyword = self.keyword_var.get().strip()
+        from_str = self.from_var.get().strip() or "all time"
+        to_str = self.to_var.get().strip() or "all time"
+
+        entries_text_parts = []
+        for task in self._results:
+            start_str = task.get('Start Time', '')
+            try:
+                dt = datetime.datetime.strptime(start_str, "%Y-%m-%d %H:%M:%S")
+                stamp = dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                stamp = start_str
+
+            ticket = task.get('Ticket', '') or '(no ticket)'
+            title = task.get('Title', '').replace('\n', ' ')
+            summary = task.get('AI Summary', '').strip()
+
+            entry_lines = [f"[{stamp}] {ticket} — {title}"]
+            if summary:
+                entry_lines.append(f"  Summary: {summary}")
+            entries_text_parts.append('\n'.join(entry_lines))
+
+        entries_text = '\n\n'.join(entries_text_parts)
+
+        full_prompt = (
+            f"The following are work log entries matching the keyword \"{keyword}\" "
+            f"between {from_str} and {to_str}.\n\n"
+            f"{entries_text}\n\n"
+            f"{user_prompt}"
+        )
+
+        # Disable button and show spinner text while waiting
+        self._analyse_btn.config(state=tk.DISABLED)
+        self._ai_status_label.config(text="Analysing…")
+        self._set_ai_response("")
+
+        def _call_llm():
+            payload = {
+                "model": self.settings_manager.get("ai_model"),
+                "prompt": full_prompt,
+                "stream": False,
+            }
+            try:
+                response = requests.post(
+                    self.settings_manager.get("ai_api_url"),
+                    json=payload,
+                    timeout=self.settings_manager.get("llm_request_timeout"),
+                )
+                if response.status_code == 200:
+                    analysis = response.json().get("response", "").strip()
+                else:
+                    analysis = f"Error from AI: HTTP {response.status_code}"
+            except requests.exceptions.Timeout:
+                analysis = (
+                    "AI request timed out. "
+                    "Try increasing the LLM timeout in Settings, or use a smaller date range."
+                )
+            except requests.exceptions.ConnectionError:
+                analysis = (
+                    "Could not connect to the AI service. "
+                    "Check that Ollama is running and the API URL in Settings is correct."
+                )
+            except Exception as exc:
+                analysis = f"AI connection failed: {exc}"
+
+            # Update UI on the main thread
+            self.after(0, lambda: self._on_analysis_done(analysis))
+
+        threading.Thread(target=_call_llm, daemon=True).start()
+
+    def _on_analysis_done(self, analysis: str):
+        """Called on the main thread once the LLM response is ready."""
+        self._ai_analysis = analysis
+        self._set_ai_response(analysis)
+        self._analyse_btn.config(state=tk.NORMAL)
+        self._ai_status_label.config(text="Analysis complete.")
+
+    def _set_ai_response(self, text: str):
+        """Replace the content of the AI response text box."""
+        self.ai_response_box.config(state='normal')
+        self.ai_response_box.delete('1.0', tk.END)
+        self.ai_response_box.insert('1.0', text)
+        self.ai_response_box.config(state='disabled')
 
     # ── Detail popup ──────────────────────────────────────────────────────────
 
@@ -403,6 +568,16 @@ class SearchNotesPage(tk.Frame):
             "",
         ]
 
+        # AI Analysis section (if available)
+        if self._ai_analysis:
+            lines += [
+                "## AI Analysis",
+                "",
+            ]
+            for para in self._ai_analysis.splitlines():
+                lines.append(para)
+            lines += ["", "---", ""]
+
         # Group entries by date
         by_date: dict = {}
         for task in self._results:
@@ -483,6 +658,21 @@ class SearchNotesPage(tk.Frame):
                         "AI Summary": task.get('AI Summary', ''),
                         "Resolved": task.get('Resolved', ''),
                     })
+                # Append AI analysis as a clearly labelled trailing row if present
+                if self._ai_analysis:
+                    writer.writerow({})
+                    for i, line in enumerate(self._ai_analysis.splitlines()):
+                        if not line.strip():
+                            continue
+                        writer.writerow({
+                            "Date": "AI Analysis" if i == 0 else "",
+                            "Time": "",
+                            "Ticket": "",
+                            "Title": line,
+                            "Duration (Min)": "",
+                            "AI Summary": "",
+                            "Resolved": "",
+                        })
             messagebox.showinfo("Exported", f"CSV file saved to:\n{path}")
         except Exception as exc:
             messagebox.showerror("Export Failed", str(exc))
@@ -517,6 +707,17 @@ class SearchNotesPage(tk.Frame):
             "=" * 60,
             "",
         ]
+
+        # AI analysis (if available)
+        if self._ai_analysis:
+            lines += [
+                "AI ANALYSIS",
+                "-" * 40,
+                self._ai_analysis,
+                "",
+                "=" * 60,
+                "",
+            ]
 
         if not highlighted:
             lines.append("No entries with AI summaries were found for this search.")
@@ -555,3 +756,4 @@ class SearchNotesPage(tk.Frame):
         self.from_var.set(yesterday)
         self.to_var.set(today_str)
         self.status_label.config(text="Enter a keyword and press Search")
+        self._ai_status_label.config(text="")

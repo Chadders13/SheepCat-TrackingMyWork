@@ -227,7 +227,8 @@ class WorkLoggerApp:
     
     def _create_search_page(self):
         """Create the search notes page"""
-        page = SearchNotesPage(self.container, self.data_repository)
+        page = SearchNotesPage(self.container, self.data_repository,
+                               settings_manager=self.settings_manager)
         self.pages["search"] = page
     
     def _create_settings_page(self):
@@ -270,6 +271,7 @@ class WorkLoggerApp:
         
         # Update the search notes page to use the new repository
         self.pages["search"].data_repository = self.data_repository
+        self.pages["search"].settings_manager = self.settings_manager
         
         # Reinitialise the todo repository with the (possibly new) directory
         new_todo_path = self.settings_manager.get_todo_file_path()
