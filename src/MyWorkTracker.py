@@ -96,6 +96,7 @@ class WorkLoggerApp:
             ("Search Notes", "search"),
             ("Todo List",    "todo"),
             ("Settings",     "settings"),
+            ("About",        "about"),
         ]
 
         self.nav_buttons = {}
