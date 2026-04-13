@@ -4,6 +4,7 @@ Knowledge Graph Page for SheepCat Work Tracker.
 Provides a UI for categorising tasks with tags, adding timing notes,
 importing documents, and linking documents to tasks.
 """
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
@@ -28,6 +29,10 @@ class KnowledgeGraphPage(tk.Frame):
         self.graph_repo = graph_repository
         self.data_repo = data_repository
         self._all_tasks_data: list = []
+        # Maps unique Treeview iid -> graph task_id (Start Time string).
+        # Required because Start Time strings contain spaces that are
+        # special characters in Tcl/Tk and cannot be used directly as iids.
+        self._iid_to_task_id: dict = {}
         self._create_widgets()
         self._load_data()
 
@@ -311,33 +316,45 @@ class KnowledgeGraphPage(tk.Frame):
             self.tags_listbox.insert(tk.END, tag['name'])
 
     def _load_all_tasks(self):
-        """Load all work-log tasks into both task trees."""
+        """Load all work-log tasks into both task trees.
+
+        A unique, Tcl-safe iid is built for each row from the task date,
+        sanitised title, and row index so that:
+        * iids never contain spaces (Tcl argument separator),
+        * every CSV row gets its own entry even when two tasks share the
+          same Start Time (e.g. multi-ticket entries).
+
+        The mapping from iid → graph task_id (Start Time) is stored in
+        ``self._iid_to_task_id`` for use by the selection handlers.
+        """
         for tree in (self.all_tasks_tree, self.doc_all_tasks_tree):
             for item in tree.get_children():
                 tree.delete(item)
 
+        self._iid_to_task_id = {}
         self._all_tasks_data = self.data_repo.get_all_tasks()
 
-        seen_in_all: set = set()
-        seen_in_doc: set = set()
-        for task in self._all_tasks_data:
-            task_id = task.get('Start Time', '')
+        for idx, task in enumerate(self._all_tasks_data):
+            task_id = task.get('Start Time', '')   # graph repo key
             title = task.get('Title', '')
+
+            # Build a unique Tcl-safe iid: date part + sanitised title + index
+            # e.g.  "2024-01-15T100000_Fixed_login_bug_42"
+            date_part = task_id.replace(' ', 'T').replace(':', '')
+            title_safe = re.sub(r'[^a-zA-Z0-9_-]', '_', title[:30])
+            unique_iid = f"{date_part}_{title_safe}_{idx}"
+
+            self._iid_to_task_id[unique_iid] = task_id
+
             tags = ', '.join(self.graph_repo.get_task_tags(task_id))
-
-            if task_id not in seen_in_all:
-                self.all_tasks_tree.insert(
-                    '', 'end', iid=task_id,
-                    values=(task_id, title, tags),
-                )
-                seen_in_all.add(task_id)
-
-            if task_id not in seen_in_doc:
-                self.doc_all_tasks_tree.insert(
-                    '', 'end', iid=task_id,
-                    values=(task_id, title),
-                )
-                seen_in_doc.add(task_id)
+            self.all_tasks_tree.insert(
+                '', 'end', iid=unique_iid,
+                values=(task_id, title, tags),
+            )
+            self.doc_all_tasks_tree.insert(
+                '', 'end', iid=unique_iid,
+                values=(task_id, title),
+            )
 
     def _load_documents(self):
         """Reload the documents tree."""
@@ -413,7 +430,7 @@ class KnowledgeGraphPage(tk.Frame):
             )
             return
         tag_name = self.tags_listbox.get(tag_sel[0])
-        task_id = task_sel[0]
+        task_id = self._iid_to_task_id.get(task_sel[0], task_sel[0])
         if self.graph_repo.tag_task(task_id, tag_name):
             self._refresh_task_tags_column()
             self._on_tag_selected()
@@ -438,7 +455,7 @@ class KnowledgeGraphPage(tk.Frame):
     def _refresh_task_tags_column(self):
         """Refresh the tags column in the all-tasks tree."""
         for item in self.all_tasks_tree.get_children():
-            task_id = item
+            task_id = self._iid_to_task_id.get(item, item)
             tags = ', '.join(self.graph_repo.get_task_tags(task_id))
             vals = list(self.all_tasks_tree.item(item)['values'])
             if len(vals) >= 3:
@@ -453,7 +470,7 @@ class KnowledgeGraphPage(tk.Frame):
                 "No Selection", "Please select a task to add a note to.", parent=self
             )
             return
-        task_id = task_sel[0]
+        task_id = self._iid_to_task_id.get(task_sel[0], task_sel[0])
         self._show_add_note_dialog(task_id)
 
     def _show_add_note_dialog(self, task_id: str):
@@ -579,7 +596,7 @@ class KnowledgeGraphPage(tk.Frame):
             )
             return
         doc_id = int(doc_sel[0])
-        task_id = task_sel[0]
+        task_id = self._iid_to_task_id.get(task_sel[0], task_sel[0])
         self.graph_repo.link_document_to_task(task_id, doc_id)
         self._on_doc_selected()
 
