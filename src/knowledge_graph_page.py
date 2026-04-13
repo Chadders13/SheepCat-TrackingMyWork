@@ -14,6 +14,7 @@ import requests
 
 import theme
 from graph_repository import GraphRepository
+from ollama_client import strip_thinking_tokens
 
 
 class KnowledgeGraphPage(tk.Frame):
@@ -411,6 +412,11 @@ class KnowledgeGraphPage(tk.Frame):
             self.settings_manager.get("doc_eval_model", "").strip()
             or self.settings_manager.get("ai_model", "")
         )
+        # Use the same configurable timeout as all other LLM calls.
+        # Thinking models (Qwen3, DeepSeek-R1, etc.) can take several minutes
+        # before they finish their reasoning chain — the default of 1000 s
+        # gives them plenty of room.
+        ai_timeout = int(self.settings_manager.get("llm_request_timeout", 1000))
         if not ai_url or not ai_model:
             messagebox.showerror(
                 "AI Not Configured",
@@ -478,9 +484,9 @@ class KnowledgeGraphPage(tk.Frame):
             return
 
         skip_tagged = skip_tagged_var.get()
-        self._run_auto_tag_with_progress(ai_url, ai_model, skip_tagged)
+        self._run_auto_tag_with_progress(ai_url, ai_model, ai_timeout, skip_tagged)
 
-    def _run_auto_tag_with_progress(self, ai_url: str, ai_model: str, skip_tagged: bool):
+    def _run_auto_tag_with_progress(self, ai_url: str, ai_model: str, ai_timeout: int, skip_tagged: bool):
         """Open a live progress window and start the background tagging thread."""
         progress_win = tk.Toplevel(self)
         progress_win.title("Auto-Tagging...")
@@ -554,7 +560,7 @@ class KnowledgeGraphPage(tk.Frame):
                     skipped_count += 1
                     continue
 
-                suggested = self._suggest_tags_via_ai(ai_url, ai_model, title)
+                suggested = self._suggest_tags_via_ai(ai_url, ai_model, title, ai_timeout)
 
                 if suggested is None:
                     self.after(0, _log, f"  [{idx}/{total}] ✗ AI error for: {title[:50]}")
@@ -590,13 +596,20 @@ class KnowledgeGraphPage(tk.Frame):
         thread.start()
 
     @staticmethod
-    def _suggest_tags_via_ai(ai_url: str, ai_model: str, title: str):
+    def _suggest_tags_via_ai(ai_url: str, ai_model: str, title: str, request_timeout: int = 1000):
         """Ask the AI to suggest category tags for a task title.
 
+        Supports thinking/reasoning models (Qwen3, DeepSeek-R1, etc.) that
+        emit ``<think>…</think>`` blocks before their actual answer — those
+        blocks are stripped automatically before the tag list is parsed.
+
         Args:
-            ai_url:   Full Ollama API generate URL.
-            ai_model: Model name to use.
-            title:    Task title string.
+            ai_url:          Full Ollama API generate URL.
+            ai_model:        Model name to use.
+            title:           Task title string.
+            request_timeout: HTTP request timeout in seconds (default 1000 to
+                             give thinking models enough time to finish their
+                             reasoning chain before returning a response).
 
         Returns:
             A list of lowercase tag strings, an empty list when no tags are
@@ -616,10 +629,10 @@ class KnowledgeGraphPage(tk.Frame):
         )
         payload = {"model": ai_model, "prompt": prompt, "stream": False}
         try:
-            response = requests.post(ai_url, json=payload, timeout=60)
+            response = requests.post(ai_url, json=payload, timeout=request_timeout)
             if response.status_code != 200:
                 return None
-            raw = response.json().get("response", "").strip()
+            raw = strip_thinking_tokens(response.json().get("response", ""))
             # Parse comma-separated tags; sanitise to word-chars + hyphen,
             # replace runs of whitespace with hyphens, drop empties / overly long.
             tags = []

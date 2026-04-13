@@ -21,7 +21,7 @@ from graph_repository import GraphRepository
 from knowledge_graph_page import KnowledgeGraphPage
 import theme
 from onboarding import run_onboarding
-from ollama_client import check_connection, DEFAULT_OLLAMA_BASE_URL
+from ollama_client import check_connection, DEFAULT_OLLAMA_BASE_URL, strip_thinking_tokens
 from send_updates_dialog import SendUpdatesDialog
  
 _NO_TICKET_LABEL = "(no ticket)"
@@ -781,7 +781,7 @@ class WorkLoggerApp:
                 timeout=self.settings_manager.get("llm_request_timeout"))
             if response.status_code == 200:
                 data = response.json()
-                return data.get("response", "").strip()
+                return strip_thinking_tokens(data.get("response", ""))
             else:
                 return f"Error: {response.status_code}"
         except Exception as e:
@@ -818,7 +818,7 @@ class WorkLoggerApp:
                 timeout=self.settings_manager.get("llm_request_timeout"))
             if response.status_code == 200:
                 data = response.json()
-                return data.get("response", "").strip()
+                return strip_thinking_tokens(data.get("response", ""))
             else:
                 return f"Error: {response.status_code}"
         except Exception as e:
@@ -985,7 +985,7 @@ class WorkLoggerApp:
                 timeout=self.settings_manager.get("llm_request_timeout"))
             if response.status_code == 200:
                 data = response.json()
-                return data.get("response", "").strip()
+                return strip_thinking_tokens(data.get("response", ""))
             else:
                 return f"Error: {response.status_code}"
         except Exception as e:
