@@ -5,9 +5,12 @@ Provides a UI for categorising tasks with tags, adding timing notes,
 importing documents, and linking documents to tasks.
 """
 import re
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import os
+
+import requests
 
 import theme
 from graph_repository import GraphRepository
@@ -16,7 +19,7 @@ from graph_repository import GraphRepository
 class KnowledgeGraphPage(tk.Frame):
     """Page for managing task tags, timing notes, documents, and their relationships."""
 
-    def __init__(self, parent, graph_repository: GraphRepository, data_repository):
+    def __init__(self, parent, graph_repository: GraphRepository, data_repository, settings_manager=None):
         """
         Initialise the Knowledge Graph page.
 
@@ -24,10 +27,13 @@ class KnowledgeGraphPage(tk.Frame):
             parent:           Parent tkinter widget.
             graph_repository: :class:`GraphRepository` instance.
             data_repository:  Data repository (CSVDataRepository) for reading tasks.
+            settings_manager: :class:`SettingsManager` instance used by the
+                              auto-tag feature to reach the configured AI model.
         """
         super().__init__(parent, bg=theme.WINDOW_BG)
         self.graph_repo = graph_repository
         self.data_repo = data_repository
+        self.settings_manager = settings_manager
         self._all_tasks_data: list = []
         # Maps unique Treeview iid -> graph task_id (Start Time string).
         # Required because Start Time strings contain spaces that are
@@ -104,6 +110,16 @@ class KnowledgeGraphPage(tk.Frame):
         theme.RoundedButton(
             tag_btn_frame, text="Delete Tag", command=self._delete_tag,
             bg=theme.RED, fg=theme.TEXT, font=theme.FONT_SMALL, width=12, cursor='hand2',
+        ).pack(side='left')
+
+        # Auto-tag turbo button
+        auto_tag_frame = tk.Frame(left, bg=theme.WINDOW_BG)
+        auto_tag_frame.pack(fill='x', padx=5, pady=(4, 8))
+        theme.RoundedButton(
+            auto_tag_frame, text="⚡ Auto-Tag All",
+            command=self._auto_tag_all,
+            bg=theme.ACCENT, fg=theme.WINDOW_BG,
+            font=theme.FONT_SMALL, width=16, cursor='hand2',
         ).pack(side='left')
 
         # ── Right panel: tasks for tag + all tasks ────────────────────────────
@@ -365,6 +381,256 @@ class KnowledgeGraphPage(tk.Frame):
                 '', 'end', iid=str(doc['id']),
                 values=(doc['name'], doc['added_at'][:10]),
             )
+
+    # ── Auto-tag ──────────────────────────────────────────────────────────────
+
+    def _auto_tag_all(self):
+        """Auto-tag every task using the configured AI model.
+
+        Opens a confirmation dialog letting the user choose whether to skip
+        already-tagged tasks or re-tag everything.  The AI call runs in a
+        background thread so the UI stays responsive; progress is streamed into
+        a scrollable log window.
+        """
+        if not self._all_tasks_data:
+            messagebox.showinfo(
+                "No Tasks", "There are no tasks to tag yet.", parent=self
+            )
+            return
+
+        if self.settings_manager is None:
+            messagebox.showerror(
+                "Not Available",
+                "Settings manager is not connected. Please restart the app.",
+                parent=self,
+            )
+            return
+
+        ai_url = self.settings_manager.get("ai_api_url", "")
+        ai_model = (
+            self.settings_manager.get("doc_eval_model", "").strip()
+            or self.settings_manager.get("ai_model", "")
+        )
+        if not ai_url or not ai_model:
+            messagebox.showerror(
+                "AI Not Configured",
+                "Please configure an AI model in Settings before using Auto-Tag.",
+                parent=self,
+            )
+            return
+
+        # Confirmation dialog — choose scope
+        dialog = tk.Toplevel(self)
+        dialog.title("Auto-Tag All Tasks")
+        dialog.geometry("400x200")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            dialog,
+            text="Auto-Tag All Tasks",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(pady=(16, 4))
+
+        tk.Label(
+            dialog,
+            text=(
+                "The AI will suggest categories for each task\n"
+                "and apply them automatically."
+            ),
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.MUTED,
+            justify='center',
+        ).pack(pady=(0, 10))
+
+        skip_tagged_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            dialog,
+            text="Skip tasks that already have tags",
+            variable=skip_tagged_var,
+            bg=theme.WINDOW_BG, fg=theme.TEXT,
+            activebackground=theme.WINDOW_BG, activeforeground=theme.TEXT,
+            selectcolor=theme.INPUT_BG, font=theme.FONT_SMALL,
+        ).pack(pady=(0, 12))
+
+        confirmed = [False]
+
+        def _confirm():
+            confirmed[0] = True
+            dialog.destroy()
+
+        btn_row = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        btn_row.pack()
+        theme.RoundedButton(
+            btn_row, text="Start", command=_confirm,
+            bg=theme.ACCENT, fg=theme.WINDOW_BG,
+            font=theme.FONT_SMALL, width=10, cursor='hand2',
+        ).pack(side='left', padx=6)
+        theme.RoundedButton(
+            btn_row, text="Cancel", command=dialog.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=10, cursor='hand2',
+        ).pack(side='left', padx=6)
+
+        self.wait_window(dialog)
+
+        if not confirmed[0]:
+            return
+
+        skip_tagged = skip_tagged_var.get()
+        self._run_auto_tag_with_progress(ai_url, ai_model, skip_tagged)
+
+    def _run_auto_tag_with_progress(self, ai_url: str, ai_model: str, skip_tagged: bool):
+        """Open a live progress window and start the background tagging thread."""
+        progress_win = tk.Toplevel(self)
+        progress_win.title("Auto-Tagging...")
+        progress_win.geometry("520x400")
+        progress_win.transient(self)
+        progress_win.configure(bg=theme.WINDOW_BG)
+        # Not grab_set so user can still navigate the app
+
+        tk.Label(
+            progress_win, text="Auto-Tagging Tasks",
+            font=theme.FONT_H3, bg=theme.WINDOW_BG, fg=theme.TEXT,
+        ).pack(anchor='w', padx=14, pady=(12, 4))
+
+        status_var = tk.StringVar(value="Starting...")
+        tk.Label(
+            progress_win, textvariable=status_var,
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+            anchor='w',
+        ).pack(fill='x', padx=14, pady=(0, 4))
+
+        log_frame = tk.Frame(progress_win, bg=theme.WINDOW_BG)
+        log_frame.pack(fill='both', expand=True, padx=10, pady=4)
+
+        log_text = tk.Text(
+            log_frame, height=16, wrap='word', state='disabled',
+            bg=theme.INPUT_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, relief='flat',
+            insertbackground=theme.TEXT,
+        )
+        log_scroll = ttk.Scrollbar(log_frame, orient='vertical', command=log_text.yview)
+        log_text.configure(yscrollcommand=log_scroll.set)
+        log_text.pack(side='left', fill='both', expand=True)
+        log_scroll.pack(side='right', fill='y')
+
+        close_btn = theme.RoundedButton(
+            progress_win, text="Close",
+            command=progress_win.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=10, cursor='hand2',
+            state=tk.DISABLED,
+        )
+        close_btn.pack(pady=(4, 10))
+
+        def _log(msg: str):
+            """Append a line to the progress log (must be called from UI thread)."""
+            log_text.configure(state='normal')
+            log_text.insert(tk.END, msg + "\n")
+            log_text.see(tk.END)
+            log_text.configure(state='disabled')
+
+        def _worker():
+            tasks = list(self._all_tasks_data)
+            total = len(tasks)
+            tagged_count = 0
+            skipped_count = 0
+            error_count = 0
+
+            for idx, task in enumerate(tasks, start=1):
+                task_id = task.get('Start Time', '')
+                title = task.get('Title', '').strip()
+
+                self.after(0, status_var.set, f"Processing {idx}/{total}: {title[:40]}")
+
+                if not title:
+                    self.after(0, _log, f"  [{idx}/{total}] Skipped (no title)")
+                    skipped_count += 1
+                    continue
+
+                if skip_tagged and self.graph_repo.get_task_tags(task_id):
+                    self.after(0, _log, f"  [{idx}/{total}] Already tagged — skipped: {title[:50]}")
+                    skipped_count += 1
+                    continue
+
+                suggested = self._suggest_tags_via_ai(ai_url, ai_model, title)
+
+                if suggested is None:
+                    self.after(0, _log, f"  [{idx}/{total}] ✗ AI error for: {title[:50]}")
+                    error_count += 1
+                    continue
+
+                if not suggested:
+                    self.after(0, _log, f"  [{idx}/{total}] ~ No tags suggested for: {title[:50]}")
+                    skipped_count += 1
+                    continue
+
+                for tag in suggested:
+                    self.graph_repo.tag_task(task_id, tag)
+
+                self.after(
+                    0, _log,
+                    f"  [{idx}/{total}] ✓ {title[:40]} → {', '.join(suggested)}",
+                )
+                tagged_count += 1
+
+            # Done — update UI from main thread
+            summary = (
+                f"\nDone. Tagged: {tagged_count}  |  "
+                f"Skipped: {skipped_count}  |  Errors: {error_count}"
+            )
+            self.after(0, _log, summary)
+            self.after(0, status_var.set, "Complete ✓")
+            self.after(0, lambda: close_btn.configure(state=tk.NORMAL))
+            # Refresh the page data so new tags are visible
+            self.after(0, self._load_data)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+    @staticmethod
+    def _suggest_tags_via_ai(ai_url: str, ai_model: str, title: str):
+        """Ask the AI to suggest category tags for a task title.
+
+        Args:
+            ai_url:   Full Ollama API generate URL.
+            ai_model: Model name to use.
+            title:    Task title string.
+
+        Returns:
+            A list of lowercase tag strings, an empty list when no tags are
+            suggested, or ``None`` on connection/parse failure.
+        """
+        prompt = (
+            "You are a work-task categorisation assistant.\n"
+            "Given the task title below, suggest 1 to 3 concise category tags.\n\n"
+            "Rules:\n"
+            "- Each tag must be a single word or short hyphenated phrase "
+            "(e.g. bug-fix, meeting, deployment, review, admin, testing)\n"
+            "- Return ONLY a comma-separated list of tag names — no explanation, "
+            "no bullet points, nothing else\n"
+            "- Use lowercase\n\n"
+            f"Task title: {title}\n"
+            "Tags:"
+        )
+        payload = {"model": ai_model, "prompt": prompt, "stream": False}
+        try:
+            response = requests.post(ai_url, json=payload, timeout=60)
+            if response.status_code != 200:
+                return None
+            raw = response.json().get("response", "").strip()
+            # Parse comma-separated tags; sanitise to word-chars + hyphen,
+            # replace runs of whitespace with hyphens, drop empties / overly long.
+            tags = []
+            for part in raw.split(","):
+                tag = re.sub(r'\s+', '-', re.sub(r'[^a-zA-Z0-9 _-]', '', part).strip()).lower()
+                if tag and len(tag) <= 40:
+                    tags.append(tag)
+            return tags[:3]  # cap at 3
+        except Exception as exc:
+            print(f"Auto-tag AI request failed: {exc}")
+            return None
 
     # ── Tag events ────────────────────────────────────────────────────────────
 

@@ -544,6 +544,7 @@ class WorkLoggerApp:
             self.container,
             self.graph_repository,
             self.data_repository,
+            self.settings_manager,
         )
         self.pages["knowledge_graph"] = page
     
@@ -595,6 +596,7 @@ class WorkLoggerApp:
             self.graph_repository.initialize()
             self.pages["knowledge_graph"].graph_repo = self.graph_repository
             self.pages["knowledge_graph"].data_repo = self.data_repository
+        self.pages["knowledge_graph"].settings_manager = self.settings_manager
     
     def show_page(self, page_name):
         """
