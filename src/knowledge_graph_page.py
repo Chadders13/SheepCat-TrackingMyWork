@@ -291,24 +291,26 @@ class KnowledgeGraphPage(tk.Frame):
 
         self.all_tasks_tree = ttk.Treeview(
             all_tasks_frame,
-            columns=('start_time', 'title', 'tags'),
+            columns=('start_time', 'ticket', 'title', 'tags'),
             show='headings', height=10,
         )
         self.all_tasks_tree.heading('start_time', text='Start Time')
+        self.all_tasks_tree.heading('ticket', text='Ticket')
         self.all_tasks_tree.heading('title', text='Title')
         self.all_tasks_tree.heading('tags', text='Current Tags')
-        self.all_tasks_tree.column('start_time', width=140)
-        self.all_tasks_tree.column('title', width=280)
-        self.all_tasks_tree.column('tags', width=180)
+        self.all_tasks_tree.column('start_time', width=130)
+        self.all_tasks_tree.column('ticket', width=90)
+        self.all_tasks_tree.column('title', width=230)
+        self.all_tasks_tree.column('tags', width=160)
 
         all_scroll = ttk.Scrollbar(all_tasks_frame, orient='vertical', command=self.all_tasks_tree.yview)
         self.all_tasks_tree.configure(yscrollcommand=all_scroll.set)
         self.all_tasks_tree.pack(side='left', fill='both', expand=True)
         all_scroll.pack(side='right', fill='y')
 
-        # Action buttons
+        # Action buttons — row 1: existing tag/untag/note actions
         action_frame = tk.Frame(right, bg=theme.WINDOW_BG)
-        action_frame.pack(fill='x', padx=5, pady=4)
+        action_frame.pack(fill='x', padx=5, pady=(4, 0))
         theme.RoundedButton(
             action_frame, text="Apply Tag to Task",
             command=self._tag_selected_task,
@@ -326,6 +328,22 @@ class KnowledgeGraphPage(tk.Frame):
             command=self._add_timing_note,
             bg=theme.ACCENT, fg=theme.WINDOW_BG,
             font=theme.FONT_SMALL, width=10, cursor='hand2',
+        ).pack(side='left')
+
+        # Action buttons — row 2: direct tag entry + ticket-number tag
+        action_frame2 = tk.Frame(right, bg=theme.WINDOW_BG)
+        action_frame2.pack(fill='x', padx=5, pady=(2, 4))
+        theme.RoundedButton(
+            action_frame2, text="Tag Task…",
+            command=self._tag_task_directly,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=12, cursor='hand2',
+        ).pack(side='left', padx=(0, 4))
+        theme.RoundedButton(
+            action_frame2, text="🎫 Tag with Ticket #",
+            command=self._tag_task_with_ticket,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=20, cursor='hand2',
         ).pack(side='left')
 
     # ── Documents tab ─────────────────────────────────────────────────────────
@@ -476,10 +494,13 @@ class KnowledgeGraphPage(tk.Frame):
 
         self._iid_to_task_id = {}
         self._all_tasks_data = self.data_repo.get_all_tasks()
+        # Invalidate the task-row cache so _get_task_row() rebuilds on next access.
+        self._task_row_cache = {}
 
         for idx, task in enumerate(self._all_tasks_data):
             task_id = task.get('Start Time', '')   # graph repo key
             title = task.get('Title', '')
+            ticket = task.get('Ticket', '')
 
             # Build a unique Tcl-safe iid: date part + sanitised title + index
             # e.g.  "2024-01-15T100000_Fixed_login_bug_42"
@@ -492,7 +513,7 @@ class KnowledgeGraphPage(tk.Frame):
             tags = ', '.join(self.graph_repo.get_task_tags(task_id))
             self.all_tasks_tree.insert(
                 '', 'end', iid=unique_iid,
-                values=(task_id, title, tags),
+                values=(task_id, ticket, title, tags),
             )
             self.doc_all_tasks_tree.insert(
                 '', 'end', iid=unique_iid,
@@ -863,9 +884,145 @@ class KnowledgeGraphPage(tk.Frame):
             task_id = self._iid_to_task_id.get(item, item)
             tags = ', '.join(self.graph_repo.get_task_tags(task_id))
             vals = list(self.all_tasks_tree.item(item)['values'])
-            if len(vals) >= 3:
-                vals[2] = tags
+            if len(vals) >= 4:
+                vals[3] = tags
                 self.all_tasks_tree.item(item, values=vals)
+
+    def _get_task_row(self, task_id: str) -> dict:
+        """Return the task data dict for *task_id*, or an empty dict if not found.
+
+        Uses a fast dict lookup built from the cached ``_all_tasks_data`` list
+        so repeated calls within the same page-load do not scan the list more
+        than once.
+        """
+        if not hasattr(self, '_task_row_cache') or len(self._task_row_cache) != len(self._all_tasks_data):
+            self._task_row_cache = {t.get('Start Time', ''): t for t in self._all_tasks_data}
+        return self._task_row_cache.get(task_id, {})
+
+    def _tag_task_directly(self):
+        """Open a dialog to add a tag (or multiple comma-separated tags) directly
+        to the selected task without first selecting a global tag from the list.
+
+        The dialog also offers a "Use Ticket #" shortcut that pre-fills the
+        task's ticket number so the user can tag tasks by ticket with one click.
+        """
+        task_sel = self.all_tasks_tree.selection()
+        if not task_sel:
+            messagebox.showinfo(
+                "No Selection", "Please select a task in the list first.", parent=self
+            )
+            return
+
+        iid = task_sel[0]
+        task_id = self._iid_to_task_id.get(iid, iid)
+
+        # Retrieve ticket number for the shortcut button
+        task_row = self._get_task_row(task_id)
+        ticket = task_row.get('Ticket', '').strip()
+        title = task_row.get('Title', task_id)
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Tag Task")
+        dialog.geometry("420x210")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            dialog,
+            text=f"Task: {title[:60]}",
+            font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT, anchor='w',
+        ).pack(fill='x', padx=15, pady=(15, 4))
+
+        tk.Label(
+            dialog,
+            text="Tag(s) — separate multiple tags with commas:",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
+        ).pack(fill='x', padx=15, pady=(0, 3))
+
+        tag_var = tk.StringVar()
+        tag_entry = tk.Entry(
+            dialog, textvariable=tag_var, width=40,
+            bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
+            font=theme.FONT_BODY,
+        )
+        tag_entry.pack(padx=15, pady=(0, 6), fill='x')
+
+        # Ticket shortcut row (only visible when the task has a ticket number)
+        if ticket:
+            shortcut_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+            shortcut_frame.pack(fill='x', padx=15, pady=(0, 6))
+            tk.Label(
+                shortcut_frame,
+                text=f"Ticket: {ticket}",
+                font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+            ).pack(side='left', padx=(0, 8))
+            theme.RoundedButton(
+                shortcut_frame, text="🎫 Use Ticket #",
+                command=lambda: tag_var.set(ticket),
+                bg=theme.SURFACE_BG, fg=theme.TEXT,
+                font=theme.FONT_SMALL, width=14, cursor='hand2',
+            ).pack(side='left')
+
+        def _on_save():
+            raw = tag_var.get().strip()
+            if not raw:
+                messagebox.showwarning("Empty Tag", "Please enter at least one tag.", parent=dialog)
+                return
+            applied = []
+            for part in raw.split(','):
+                tag_name = part.strip()
+                if tag_name:
+                    self.graph_repo.tag_task(task_id, tag_name)
+                    applied.append(tag_name)
+            dialog.destroy()
+            self._refresh_task_tags_column()
+            self._on_tag_selected()
+            self._load_tags()   # add any brand-new tags to the left list
+
+        btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        btn_frame.pack(pady=8)
+        theme.RoundedButton(
+            btn_frame, text="Save", command=_on_save,
+            bg=theme.GREEN, fg=theme.WINDOW_BG, font=theme.FONT_BODY, width=8, cursor='hand2',
+        ).pack(side='left', padx=5)
+        theme.RoundedButton(
+            btn_frame, text="Cancel", command=dialog.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT, font=theme.FONT_BODY, width=8, cursor='hand2',
+        ).pack(side='left', padx=5)
+
+        tag_entry.focus_set()
+        self.wait_window(dialog)
+
+    def _tag_task_with_ticket(self):
+        """Tag the selected task with its ticket number in one click.
+
+        The ticket number is applied as-is (after stripping whitespace).
+        If the task has no ticket number the user is informed.
+        """
+        task_sel = self.all_tasks_tree.selection()
+        if not task_sel:
+            messagebox.showinfo(
+                "No Selection", "Please select a task in the list first.", parent=self
+            )
+            return
+
+        iid = task_sel[0]
+        task_id = self._iid_to_task_id.get(iid, iid)
+        task_row = self._get_task_row(task_id)
+        ticket = task_row.get('Ticket', '').strip()
+        if not ticket:
+            messagebox.showinfo(
+                "No Ticket Number",
+                "The selected task does not have a ticket number.",
+                parent=self,
+            )
+            return
+
+        self.graph_repo.tag_task(task_id, ticket)
+        self._refresh_task_tags_column()
+        self._on_tag_selected()
+        self._load_tags()
 
     def _add_timing_note(self):
         """Open a dialog to add a timing/context note to the selected task."""
