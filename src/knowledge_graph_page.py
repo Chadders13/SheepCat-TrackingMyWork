@@ -213,7 +213,7 @@ class KnowledgeGraphPage(tk.Frame):
         ).pack(anchor='w', padx=5, pady=(5, 2))
 
         self.tags_listbox = tk.Listbox(
-            left, bg=theme.INPUT_BG, fg=theme.TEXT, selectmode='single',
+            left, bg=theme.INPUT_BG, fg=theme.TEXT, selectmode='extended',
             font=theme.FONT_BODY, relief='flat', height=18,
         )
         self.tags_listbox.pack(fill='both', expand=True, padx=5, pady=3)
@@ -233,10 +233,19 @@ class KnowledgeGraphPage(tk.Frame):
         ).pack(side='left')
 
         tag_btn_frame = tk.Frame(left, bg=theme.WINDOW_BG)
-        tag_btn_frame.pack(fill='x', padx=5, pady=(0, 5))
+        tag_btn_frame.pack(fill='x', padx=5, pady=(0, 2))
         theme.RoundedButton(
             tag_btn_frame, text="Delete Tag", command=self._delete_tag,
             bg=theme.RED, fg=theme.TEXT, font=theme.FONT_SMALL, width=12, cursor='hand2',
+        ).pack(side='left')
+
+        combine_frame = tk.Frame(left, bg=theme.WINDOW_BG)
+        combine_frame.pack(fill='x', padx=5, pady=(0, 5))
+        theme.RoundedButton(
+            combine_frame, text="Combine / Add Tag…",
+            command=self._combine_or_add_tag,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=20, cursor='hand2',
         ).pack(side='left')
 
         # Auto-tag turbo button
@@ -795,12 +804,23 @@ class KnowledgeGraphPage(tk.Frame):
     # ── Tag events ────────────────────────────────────────────────────────────
 
     def _on_tag_selected(self, _event=None):
-        """Populate the tagged-tasks tree when a tag is selected."""
+        """Populate the tagged-tasks tree when one or more tags are selected.
+
+        When a single tag is selected the behaviour is unchanged.  When
+        multiple tags are selected the tree shows the *union* of tasks that
+        carry any of the selected tags, allowing quick cross-tag inspection
+        before using "Combine / Add Tag…".
+        """
         selection = self.tags_listbox.curselection()
         if not selection:
             return
-        tag_name = self.tags_listbox.get(selection[0])
-        task_ids = self.graph_repo.get_tasks_by_tag(tag_name)
+
+        selected_names = [self.tags_listbox.get(i) for i in selection]
+
+        if len(selected_names) == 1:
+            task_ids = self.graph_repo.get_tasks_by_tag(selected_names[0])
+        else:
+            task_ids = self.graph_repo.get_tasks_by_tags(selected_names)
 
         for item in self.tagged_tasks_tree.get_children():
             self.tagged_tasks_tree.delete(item)
@@ -843,6 +863,181 @@ class KnowledgeGraphPage(tk.Frame):
             self._load_tags()
             for item in self.tagged_tasks_tree.get_children():
                 self.tagged_tasks_tree.delete(item)
+
+    def _combine_or_add_tag(self):
+        """Open a popup that lets the user add a new tag to all tasks under the
+        selected tags, or combine the selected tags into one canonical tag.
+
+        The popup requires at least one tag to be selected in the left panel.
+        For the "combine" flow at least two tags must be selected.
+        """
+        selection = self.tags_listbox.curselection()
+        if not selection:
+            messagebox.showinfo(
+                "No Tags Selected",
+                "Select one or more tags in the list first.\n"
+                "(Hold Ctrl or Shift to select multiple tags.)",
+                parent=self,
+            )
+            return
+
+        selected_names = [self.tags_listbox.get(i) for i in selection]
+
+        # ── Build the dialog ────────────────────────────────────────────────
+        dialog = tk.Toplevel(self)
+        dialog.title("Combine / Add Tag")
+        dialog.geometry("480x340")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(bg=theme.WINDOW_BG)
+
+        # Header — show which tags are involved (truncate long lists for readability)
+        _SUMMARY_MAX = 60
+        tag_summary = ", ".join(selected_names)
+        if len(tag_summary) > _SUMMARY_MAX:
+            tag_summary = tag_summary[:_SUMMARY_MAX - 3] + "…"
+        tk.Label(
+            dialog,
+            text=f"Selected tags: {tag_summary}",
+            font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT,
+            anchor='w', wraplength=450,
+        ).pack(fill='x', padx=15, pady=(15, 8))
+
+        ttk.Separator(dialog, orient='horizontal').pack(fill='x', padx=15, pady=(0, 8))
+
+        # Mode selector
+        mode_var = tk.StringVar(value="add")
+
+        mode_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        mode_frame.pack(fill='x', padx=15, pady=(0, 8))
+
+        tk.Radiobutton(
+            mode_frame, text="Add a new tag to all tasks under the selected tags",
+            variable=mode_var, value="add",
+            bg=theme.WINDOW_BG, fg=theme.TEXT, selectcolor=theme.INPUT_BG,
+            activebackground=theme.WINDOW_BG, font=theme.FONT_BODY,
+            command=lambda: _refresh_dynamic(),
+        ).pack(anchor='w')
+        combine_radio = tk.Radiobutton(
+            mode_frame,
+            text="Combine selected tags into one  (merge all into a single tag)",
+            variable=mode_var, value="combine",
+            bg=theme.WINDOW_BG, fg=theme.TEXT, selectcolor=theme.INPUT_BG,
+            activebackground=theme.WINDOW_BG, font=theme.FONT_BODY,
+            command=lambda: _refresh_dynamic(),
+            state=tk.NORMAL if len(selected_names) >= 2 else tk.DISABLED,
+        )
+        combine_radio.pack(anchor='w')
+
+        ttk.Separator(dialog, orient='horizontal').pack(fill='x', padx=15, pady=(0, 8))
+
+        # Dynamic area that changes depending on mode
+        dynamic_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        dynamic_frame.pack(fill='x', padx=15)
+
+        # — Variables for the two modes —
+        new_tag_var = tk.StringVar()
+        canonical_var = tk.StringVar(value=selected_names[0])
+
+        def _refresh_dynamic():
+            """Rebuild the dynamic section to match the current mode."""
+            for w in dynamic_frame.winfo_children():
+                w.destroy()
+
+            if mode_var.get() == "add":
+                tk.Label(
+                    dynamic_frame,
+                    text="New tag name (will be added to all tasks under the selected tags):",
+                    font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
+                ).pack(fill='x', pady=(0, 4))
+                entry = tk.Entry(
+                    dynamic_frame, textvariable=new_tag_var, width=40,
+                    bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
+                    font=theme.FONT_BODY,
+                )
+                entry.pack(fill='x')
+                entry.focus_set()
+            else:
+                tk.Label(
+                    dynamic_frame,
+                    text="Choose the primary (canonical) tag to keep:",
+                    font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
+                ).pack(fill='x', pady=(0, 6))
+                for name in selected_names:
+                    tk.Radiobutton(
+                        dynamic_frame, text=name,
+                        variable=canonical_var, value=name,
+                        bg=theme.WINDOW_BG, fg=theme.TEXT,
+                        selectcolor=theme.INPUT_BG,
+                        activebackground=theme.WINDOW_BG,
+                        font=theme.FONT_BODY,
+                    ).pack(anchor='w')
+
+        _refresh_dynamic()
+
+        # ── Action buttons ────────────────────────────────────────────────
+        def _on_ok():
+            if mode_var.get() == "add":
+                new_name = new_tag_var.get().strip()
+                if not new_name:
+                    messagebox.showwarning(
+                        "Empty Tag", "Please enter a tag name.", parent=dialog
+                    )
+                    return
+                # Collect union of task_ids for all selected tags
+                task_ids = self.graph_repo.get_tasks_by_tags(selected_names)
+                applied = 0
+                for tid in task_ids:
+                    if self.graph_repo.tag_task(tid, new_name):
+                        applied += 1
+                dialog.destroy()
+                self._load_data()
+                messagebox.showinfo(
+                    "Done",
+                    f"Tag '{new_name}' added to {applied} task(s).",
+                    parent=self,
+                )
+            else:
+                canonical = canonical_var.get()
+                sources = [n for n in selected_names if n.lower() != canonical.lower()]
+                if not sources:
+                    messagebox.showinfo(
+                        "Nothing to merge",
+                        "All selected tags are already the same tag.",
+                        parent=dialog,
+                    )
+                    return
+                merged_count = len(sources)
+                if not messagebox.askyesno(
+                    "Confirm Merge",
+                    f"Merge {merged_count} tag(s) into '{canonical}'?\n\n"
+                    f"Tags to be removed: {', '.join(sources)}\n\n"
+                    "All their tasks will be re-tagged under the canonical tag.",
+                    parent=dialog,
+                ):
+                    return
+                self.graph_repo.merge_tags(sources, canonical)
+                dialog.destroy()
+                self._load_data()
+                messagebox.showinfo(
+                    "Done",
+                    f"Merged {merged_count} tag(s) into '{canonical}'.",
+                    parent=self,
+                )
+
+        btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        btn_frame.pack(pady=10)
+        theme.RoundedButton(
+            btn_frame, text="OK", command=_on_ok,
+            bg=theme.GREEN, fg=theme.WINDOW_BG, font=theme.FONT_BODY, width=8, cursor='hand2',
+        ).pack(side='left', padx=6)
+        theme.RoundedButton(
+            btn_frame, text="Cancel", command=dialog.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT, font=theme.FONT_BODY, width=8, cursor='hand2',
+        ).pack(side='left', padx=6)
+
+        self.wait_window(dialog)
 
     def _tag_selected_task(self):
         """Apply the selected tag to the selected task."""

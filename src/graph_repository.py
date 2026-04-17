@@ -250,6 +250,91 @@ class GraphRepository:
         ).fetchall()
         return [r["task_id"] for r in rows]
 
+    def get_tasks_by_tags(self, tag_names: List[str]) -> List[str]:
+        """Return the union of task_ids that carry any of the given tags.
+
+        Duplicate task_ids are removed; ordering is by the earliest tagging
+        across all matched tags.
+
+        Args:
+            tag_names: List of tag names (case-insensitive).
+
+        Returns:
+            Deduplicated list of task_id strings.
+        """
+        if not tag_names:
+            return []
+        # Lowercase all names so LOWER(t.name) comparison is case-insensitive.
+        lower_names = [n.lower() for n in tag_names]
+        placeholders = ",".join("?" * len(lower_names))
+        rows = self._get_conn().execute(
+            f"""SELECT DISTINCT tt.task_id
+                FROM task_tags tt
+                JOIN tags t ON t.id = tt.tag_id
+                WHERE LOWER(t.name) IN ({placeholders})
+                ORDER BY tt.added_at""",
+            lower_names,
+        ).fetchall()
+        return [r["task_id"] for r in rows]
+
+    def merge_tags(self, source_names: List[str], target_name: str) -> bool:
+        """Merge one or more tags into a single target tag.
+
+        All task associations from each *source* tag are transferred to the
+        *target* tag (``INSERT OR IGNORE`` avoids duplicate primary-key errors
+        when a task already carries the target tag).  Source tags that differ
+        from the target name are then deleted along with any remaining
+        ``task_tags`` rows.
+
+        The target tag is created automatically if it does not already exist.
+
+        Args:
+            source_names: Tag names whose task associations should be moved.
+                          May include *target_name* — it will be skipped.
+            target_name:  The canonical tag name to keep.
+
+        Returns:
+            ``True`` on success, ``False`` if a database error occurred.
+        """
+        target_name = target_name.strip()
+        if not target_name:
+            return False
+        try:
+            conn = self._get_conn()
+            # Ensure the target tag exists and get its id.
+            target_id = self.add_tag(target_name)
+            if target_id is None:
+                return False
+            # added_at is set to the merge time for all transferred rows.
+            # The original per-task tagging timestamps are intentionally not
+            # preserved because the merge is a structural re-labelling event
+            # rather than a new tagging action.
+            added_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for src_name in source_names:
+                src_name = src_name.strip()
+                if not src_name or src_name.lower() == target_name.lower():
+                    continue
+                src_row = conn.execute(
+                    "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (src_name,)
+                ).fetchone()
+                if src_row is None:
+                    continue
+                src_id = src_row["id"]
+                # Move all task associations from source to target.
+                conn.execute(
+                    """INSERT OR IGNORE INTO task_tags (task_id, tag_id, added_at)
+                       SELECT task_id, ?, ? FROM task_tags WHERE tag_id = ?""",
+                    (target_id, added_at, src_id),
+                )
+                # Remove source associations and the source tag itself.
+                conn.execute("DELETE FROM task_tags WHERE tag_id = ?", (src_id,))
+                conn.execute("DELETE FROM tags WHERE id = ?", (src_id,))
+            conn.commit()
+            return True
+        except Exception as exc:
+            print(f"Error merging tags: {exc}")
+            return False
+
     # ── Timing notes ──────────────────────────────────────────────────────────
 
     def add_timing_note(self, task_id: str, note: str) -> bool:
