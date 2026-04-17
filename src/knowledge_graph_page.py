@@ -886,11 +886,14 @@ class KnowledgeGraphPage(tk.Frame):
         # ── Build the dialog ────────────────────────────────────────────────
         dialog = tk.Toplevel(self)
         dialog.title("Combine / Add Tag")
-        dialog.geometry("480x340")
-        dialog.resizable(False, False)
+        dialog.resizable(True, True)
         dialog.transient(self)
         dialog.grab_set()
         dialog.configure(bg=theme.WINDOW_BG)
+
+        # ── Fixed top section ────────────────────────────────────────────
+        top_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        top_frame.pack(fill='x')
 
         # Header — show which tags are involved (truncate long lists for readability)
         _SUMMARY_MAX = 60
@@ -898,18 +901,18 @@ class KnowledgeGraphPage(tk.Frame):
         if len(tag_summary) > _SUMMARY_MAX:
             tag_summary = tag_summary[:_SUMMARY_MAX - 3] + "…"
         tk.Label(
-            dialog,
+            top_frame,
             text=f"Selected tags: {tag_summary}",
             font=theme.FONT_BODY_BOLD, bg=theme.WINDOW_BG, fg=theme.TEXT,
             anchor='w', wraplength=450,
         ).pack(fill='x', padx=15, pady=(15, 8))
 
-        ttk.Separator(dialog, orient='horizontal').pack(fill='x', padx=15, pady=(0, 8))
+        ttk.Separator(top_frame, orient='horizontal').pack(fill='x', padx=15, pady=(0, 8))
 
         # Mode selector
         mode_var = tk.StringVar(value="add")
 
-        mode_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        mode_frame = tk.Frame(top_frame, bg=theme.WINDOW_BG)
         mode_frame.pack(fill='x', padx=15, pady=(0, 8))
 
         tk.Radiobutton(
@@ -930,11 +933,40 @@ class KnowledgeGraphPage(tk.Frame):
         )
         combine_radio.pack(anchor='w')
 
-        ttk.Separator(dialog, orient='horizontal').pack(fill='x', padx=15, pady=(0, 8))
+        ttk.Separator(top_frame, orient='horizontal').pack(fill='x', padx=15, pady=(0, 4))
 
-        # Dynamic area that changes depending on mode
-        dynamic_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
-        dynamic_frame.pack(fill='x', padx=15)
+        # ── Fixed bottom section (packed before the middle so it stays at the bottom) ──
+        btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        btn_frame.pack(side='bottom', pady=10)
+
+        # ── Scrollable middle section ─────────────────────────────────────
+        scroll_outer = tk.Frame(dialog, bg=theme.WINDOW_BG)
+        scroll_outer.pack(fill='both', expand=True, padx=15, pady=(0, 4))
+
+        _canvas = tk.Canvas(scroll_outer, bg=theme.WINDOW_BG, highlightthickness=0)
+        _scrollbar = ttk.Scrollbar(scroll_outer, orient='vertical', command=_canvas.yview)
+        _canvas.configure(yscrollcommand=_scrollbar.set)
+        _scrollbar.pack(side='right', fill='y')
+        _canvas.pack(side='left', fill='both', expand=True)
+
+        dynamic_frame = tk.Frame(_canvas, bg=theme.WINDOW_BG)
+        _canvas_win = _canvas.create_window((0, 0), window=dynamic_frame, anchor='nw')
+
+        def _on_df_configure(_e=None):
+            _canvas.configure(scrollregion=_canvas.bbox('all'))
+
+        def _on_canvas_resize(e):
+            _canvas.itemconfigure(_canvas_win, width=e.width)
+
+        dynamic_frame.bind('<Configure>', _on_df_configure)
+        _canvas.bind('<Configure>', _on_canvas_resize)
+
+        # Mouse-wheel scrolling inside the canvas
+        def _on_mousewheel(e):
+            _canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
+
+        _canvas.bind('<MouseWheel>', _on_mousewheel)
+        dynamic_frame.bind('<MouseWheel>', _on_mousewheel)
 
         # — Variables for the two modes —
         new_tag_var = tk.StringVar()
@@ -950,7 +982,7 @@ class KnowledgeGraphPage(tk.Frame):
                     dynamic_frame,
                     text="New tag name (will be added to all tasks under the selected tags):",
                     font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
-                ).pack(fill='x', pady=(0, 4))
+                ).pack(fill='x', pady=(4, 4))
                 entry = tk.Entry(
                     dynamic_frame, textvariable=new_tag_var, width=40,
                     bg=theme.INPUT_BG, fg=theme.TEXT, insertbackground=theme.TEXT,
@@ -963,18 +995,30 @@ class KnowledgeGraphPage(tk.Frame):
                     dynamic_frame,
                     text="Choose the primary (canonical) tag to keep:",
                     font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED, anchor='w',
-                ).pack(fill='x', pady=(0, 6))
+                ).pack(fill='x', pady=(4, 6))
                 for name in selected_names:
-                    tk.Radiobutton(
+                    rb = tk.Radiobutton(
                         dynamic_frame, text=name,
                         variable=canonical_var, value=name,
                         bg=theme.WINDOW_BG, fg=theme.TEXT,
                         selectcolor=theme.INPUT_BG,
                         activebackground=theme.WINDOW_BG,
                         font=theme.FONT_BODY,
-                    ).pack(anchor='w')
+                    )
+                    rb.pack(anchor='w')
+                    rb.bind('<MouseWheel>', _on_mousewheel)
 
         _refresh_dynamic()
+
+        # ── Size the dialog to fit content, capped at 85% of screen height ──
+        dialog.update_idletasks()
+        _ROW_H = 26          # approximate height per radio-button row
+        _FIXED_H = 230       # header + separators + mode radios + buttons
+        content_h = _FIXED_H + len(selected_names) * _ROW_H
+        screen_h = dialog.winfo_screenheight()
+        dialog_h = min(content_h, int(screen_h * 0.85))
+        dialog_h = max(dialog_h, 320)
+        dialog.geometry(f"500x{dialog_h}")
 
         # ── Action buttons ────────────────────────────────────────────────
         def _on_ok():
@@ -1026,8 +1070,6 @@ class KnowledgeGraphPage(tk.Frame):
                     parent=self,
                 )
 
-        btn_frame = tk.Frame(dialog, bg=theme.WINDOW_BG)
-        btn_frame.pack(pady=10)
         theme.RoundedButton(
             btn_frame, text="OK", command=_on_ok,
             bg=theme.GREEN, fg=theme.WINDOW_BG, font=theme.FONT_BODY, width=8, cursor='hand2',
