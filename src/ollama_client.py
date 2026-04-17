@@ -5,14 +5,33 @@ Provides helpers for:
   - Testing the connection to an Ollama instance.
   - Listing locally available models.
   - Pulling a model with streaming progress updates.
+  - Stripping thinking-model tokens from LLM responses.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 import requests
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+
+
+def strip_thinking_tokens(text: str) -> str:
+    """Remove ``<think>…</think>`` blocks emitted by reasoning/thinking models.
+
+    Thinking models such as Qwen3, DeepSeek-R1 and similar emit one or more
+    ``<think>…</think>`` sections *before* their actual answer.  Those blocks
+    must be stripped so only the model's final answer is processed.
+
+    Args:
+        text: Raw LLM response string.
+
+    Returns:
+        The response with all ``<think>…</think>`` blocks removed and any
+        resulting leading/trailing whitespace trimmed.
+    """
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
 
 # Curated model recommendations shown in the model-selection dialog.
 RECOMMENDED_MODELS = [
