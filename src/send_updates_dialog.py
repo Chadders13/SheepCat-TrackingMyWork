@@ -166,6 +166,29 @@ class SendUpdatesDialog:
             font=theme.FONT_SMALL, width=12, cursor='hand2',
         ).pack(side='left', padx=2)
 
+        # Ticket quick-select row
+        ticket_filter_frame = tk.Frame(inner, bg=theme.WINDOW_BG)
+        ticket_filter_frame.pack(fill='x', padx=15, pady=(0, 4))
+
+        tk.Label(
+            ticket_filter_frame, text="Quick select by ticket #:",
+            font=theme.FONT_SMALL, bg=theme.WINDOW_BG, fg=theme.MUTED,
+        ).pack(side='left', padx=(0, 6))
+
+        self._ticket_filter_var = tk.StringVar()
+        self._ticket_filter_combo = ttk.Combobox(
+            ticket_filter_frame, textvariable=self._ticket_filter_var,
+            values=[], width=18, state='readonly',
+        )
+        self._ticket_filter_combo.pack(side='left', padx=(0, 6))
+
+        theme.RoundedButton(
+            ticket_filter_frame, text="Select All for Ticket",
+            command=self._select_all_for_ticket,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=20, cursor='hand2',
+        ).pack(side='left', padx=(0, 4))
+
         ticket_outer = tk.Frame(inner, bg=theme.WINDOW_BG)
         ticket_outer.pack(fill='x', padx=15, pady=(0, 8))
 
@@ -374,10 +397,12 @@ class SendUpdatesDialog:
             self._status_var.set(f"No tickets logged for {label}.")
             return
 
+        unique_tickets = []
         for idx, task in enumerate(tasks):
             start = task.get("Start Time", "")
             date_str = start[:10] if len(start) >= 10 else ""
             time_str = start[11:16] if len(start) >= 16 else start
+            ticket = task.get("Ticket", "")
             # The tag stores the index into _tasks_cache so _on_ticket_selected
             # can retrieve the original task dict efficiently.
             self._ticket_tree.insert(
@@ -385,16 +410,24 @@ class SendUpdatesDialog:
                 values=(
                     date_str,
                     time_str,
-                    task.get("Ticket", ""),
+                    ticket,
                     task.get("Title", "")[:60],
                     task.get("Resolved", "No"),
                 ),
                 tags=(str(idx),),
             )
+            tid = ticket.split(",")[0].strip()
+            if tid and tid not in unique_tickets:
+                unique_tickets.append(tid)
+
+        # Populate the quick-select combobox with unique ticket numbers
+        self._ticket_filter_combo.configure(values=unique_tickets)
+        if unique_tickets:
+            self._ticket_filter_var.set(unique_tickets[0])
 
         self._status_var.set(
             f"{len(tasks)} ticket(s) for {label}. "
-            "Select one or more (same ticket number) to continue."
+            "Use 'Select All for Ticket' or hold Ctrl/Shift to pick entries."
         )
 
     # ------------------------------------------------------------------
@@ -440,6 +473,38 @@ class SendUpdatesDialog:
         if self._selected_tasks and self._services:
             self._btn_verify.config(state=tk.NORMAL)
 
+    def _select_all_for_ticket(self):
+        """Select all treeview rows that match the chosen ticket number."""
+        ticket_id = self._ticket_filter_var.get().strip()
+        if not ticket_id:
+            messagebox.showinfo(
+                "No Ticket Selected",
+                "Please choose a ticket number from the dropdown first.",
+                parent=self._dialog,
+            )
+            return
+
+        matching_iids = []
+        for iid in self._ticket_tree.get_children():
+            values = self._ticket_tree.item(iid, "values")
+            # values: (Date, Time, Ticket, Title, Resolved)
+            row_ticket = values[2].split(",")[0].strip() if len(values) > 2 else ""
+            if row_ticket == ticket_id:
+                matching_iids.append(iid)
+
+        if not matching_iids:
+            messagebox.showinfo(
+                "No Matches",
+                f"No loaded tasks found for ticket '{ticket_id}'.\n"
+                "Try loading a wider date range (e.g. Last 30 Days).",
+                parent=self._dialog,
+            )
+            return
+
+        self._ticket_tree.selection_set(matching_iids)
+        # Scroll to the first match so the user can see what was selected
+        self._ticket_tree.see(matching_iids[0])
+
     # ------------------------------------------------------------------
     # Step 3 — Verify ticket
     # ------------------------------------------------------------------
@@ -463,16 +528,17 @@ class SendUpdatesDialog:
             return
 
         if len(ticket_ids) > 1:
-            messagebox.showwarning(
-                "Mixed Tickets",
-                "The selected entries belong to different tickets:\n"
-                + ", ".join(ticket_ids)
-                + "\n\nPlease select entries that all share the same ticket number.",
-                parent=self._dialog,
-            )
-            return
-
-        ticket_id = ticket_ids[0]
+            # Multiple tickets in the selection — ask the user which one to send for.
+            ticket_id = self._pick_ticket_dialog(ticket_ids)
+            if not ticket_id:
+                return
+            # Filter _selected_tasks to only entries for the chosen ticket
+            self._selected_tasks = [
+                t for t in self._selected_tasks
+                if t.get("Ticket", "").split(",")[0].strip() == ticket_id
+            ]
+        else:
+            ticket_id = ticket_ids[0]
 
         service = self._get_selected_service()
         if not service:
@@ -663,6 +729,59 @@ class SendUpdatesDialog:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _pick_ticket_dialog(self, ticket_ids: list) -> str:
+        """Show a small dialog asking which ticket to send the update for.
+
+        Args:
+            ticket_ids: List of unique ticket IDs found in the selection.
+
+        Returns:
+            The chosen ticket ID string, or ``""`` if the user cancelled.
+        """
+        chosen = [""]
+
+        dlg = tk.Toplevel(self._dialog)
+        dlg.title("Choose Ticket to Update")
+        dlg.geometry("360x180")
+        dlg.minsize(300, 150)
+        dlg.transient(self._dialog)
+        dlg.grab_set()
+        dlg.configure(bg=theme.WINDOW_BG)
+
+        tk.Label(
+            dlg,
+            text="Your selection spans multiple tickets.\nChoose which ticket to send the update for:",
+            font=theme.FONT_BODY, bg=theme.WINDOW_BG, fg=theme.TEXT,
+            justify='center', wraplength=330,
+        ).pack(pady=(16, 8))
+
+        picked_var = tk.StringVar(value=ticket_ids[0])
+        combo = ttk.Combobox(
+            dlg, textvariable=picked_var,
+            values=ticket_ids, width=22, state='readonly',
+        )
+        combo.pack(pady=(0, 12))
+
+        def _ok():
+            chosen[0] = picked_var.get()
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=theme.WINDOW_BG)
+        btn_row.pack()
+        theme.RoundedButton(
+            btn_row, text="OK", command=_ok,
+            bg=theme.PRIMARY, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=8, cursor='hand2',
+        ).pack(side='left', padx=6)
+        theme.RoundedButton(
+            btn_row, text="Cancel", command=dlg.destroy,
+            bg=theme.SURFACE_BG, fg=theme.TEXT,
+            font=theme.FONT_SMALL, width=8, cursor='hand2',
+        ).pack(side='left', padx=6)
+
+        dlg.wait_window()
+        return chosen[0]
 
     def _get_selected_service(self):
         """Return the currently selected service instance, or None."""
