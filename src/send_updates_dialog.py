@@ -23,6 +23,8 @@ from external_api_service import APIServiceFactory
 
 
 _TICKET_COL_WIDTHS = {"Date": 85, "Time": 55, "Resolved": 70, "Ticket": 90, "Title": 220}
+# Column index (0-based) of the Ticket field in the task treeview.
+_TICKET_COL_INDEX = 2
 
 
 class SendUpdatesDialog:
@@ -397,7 +399,8 @@ class SendUpdatesDialog:
             self._status_var.set(f"No tickets logged for {label}.")
             return
 
-        unique_tickets = []
+        seen_tickets: set = set()
+        unique_tickets: list = []
         for idx, task in enumerate(tasks):
             start = task.get("Start Time", "")
             date_str = start[:10] if len(start) >= 10 else ""
@@ -417,7 +420,8 @@ class SendUpdatesDialog:
                 tags=(str(idx),),
             )
             tid = ticket.split(",")[0].strip()
-            if tid and tid not in unique_tickets:
+            if tid and tid not in seen_tickets:
+                seen_tickets.add(tid)
                 unique_tickets.append(tid)
 
         # Populate the quick-select combobox with unique ticket numbers
@@ -488,7 +492,7 @@ class SendUpdatesDialog:
         for iid in self._ticket_tree.get_children():
             values = self._ticket_tree.item(iid, "values")
             # values: (Date, Time, Ticket, Title, Resolved)
-            row_ticket = values[2].split(",")[0].strip() if len(values) > 2 else ""
+            row_ticket = values[_TICKET_COL_INDEX].split(",")[0].strip() if len(values) > _TICKET_COL_INDEX else ""
             if row_ticket == ticket_id:
                 matching_iids.append(iid)
 
@@ -739,7 +743,7 @@ class SendUpdatesDialog:
         Returns:
             The chosen ticket ID string, or ``""`` if the user cancelled.
         """
-        chosen = [""]
+        chosen = ""
 
         dlg = tk.Toplevel(self._dialog)
         dlg.title("Choose Ticket to Update")
@@ -764,7 +768,8 @@ class SendUpdatesDialog:
         combo.pack(pady=(0, 12))
 
         def _ok():
-            chosen[0] = picked_var.get()
+            nonlocal chosen
+            chosen = picked_var.get()
             dlg.destroy()
 
         btn_row = tk.Frame(dlg, bg=theme.WINDOW_BG)
@@ -781,7 +786,7 @@ class SendUpdatesDialog:
         ).pack(side='left', padx=6)
 
         dlg.wait_window()
-        return chosen[0]
+        return chosen
 
     def _get_selected_service(self):
         """Return the currently selected service instance, or None."""
